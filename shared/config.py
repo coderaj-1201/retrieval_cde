@@ -90,7 +90,10 @@ class Settings(BaseSettings):
     LTM_MAX_SUMMARY_CHARS: int   = Field(default=3000,   ge=500, le=10000)
     LTM_MAX_FACTS: int           = Field(default=10,     ge=3,   le=30)
 
-    # ── Rate limiting (in-process, single-worker only) ─────────────────────────
+    # ── Rate limiting ──────────────────────────────────────────────────────────
+    # Set REDIS_URL to enable distributed (multi-replica) rate limiting.
+    # Omit REDIS_URL to use the in-process token bucket (single-worker only).
+    REDIS_URL: str | None = None
     RATE_LIMIT_RPM:   int = Field(default=20, ge=1,  le=600)
     RATE_LIMIT_BURST: int = Field(default=5,  ge=1,  le=50)
 
