@@ -126,6 +126,16 @@ async def update_ltm(user_id: str, session: SessionMemory) -> None:
     prior_summary = existing.summary if existing else ""
     prior_facts   = existing.key_facts if existing else []
 
+    # Bound the prior summary and facts to avoid token overflow on long-lived users.
+    prior_summary_bounded = prior_summary[:settings.LTM_MAX_SUMMARY_CHARS]
+    prior_facts_bounded   = prior_facts[:settings.LTM_MAX_FACTS]
+
+    if len(prior_summary) > settings.LTM_MAX_SUMMARY_CHARS:
+        logger.warning(
+            "ltm_summary_truncated user_id=%s original_len=%d bounded_len=%d",
+            user_id, len(prior_summary), settings.LTM_MAX_SUMMARY_CHARS,
+        )
+
     all_text = "\n".join(
         f"Q: {t.question}\nA: {t.answer}" for t in session.turns
     )
@@ -136,8 +146,8 @@ async def update_ltm(user_id: str, session: SessionMemory) -> None:
         "Return ONLY JSON: {\"summary\": \"...\", \"key_facts\": [\"...\", ...]}"
     )
     user_msg = (
-        f"Prior summary:\n{prior_summary}\n\n"
-        f"Prior key facts:\n{json.dumps(prior_facts)}\n\n"
+        f"Prior summary:\n{prior_summary_bounded}\n\n"
+        f"Prior key facts:\n{json.dumps(prior_facts_bounded)}\n\n"
         f"New turns:\n{all_text}"
     )
 
@@ -150,14 +160,17 @@ async def update_ltm(user_id: str, session: SessionMemory) -> None:
                 {"role": "user",   "content": user_msg},
             ],
             temperature=0,
-            max_tokens=500,
+            max_tokens=600,
             response_format={"type": "json_object"},
         )
         raw = json.loads(resp.choices[0].message.content)
-        summary    = raw.get("summary", prior_summary)
-        key_facts  = raw.get("key_facts", prior_facts)
+        summary    = raw.get("summary", prior_summary_bounded)
+        key_facts  = raw.get("key_facts", prior_facts_bounded)
     except Exception as exc:
-        logger.error("LTM update LLM call failed user_id=%s: %s", user_id, exc)
+        logger.error(
+            "ltm_update_llm_failed user_id=%s: %s",
+            user_id, exc, exc_info=True,
+        )
         return
 
     src_ids = list({*(existing.source_conversation_ids if existing else []), session.conversation_id})
