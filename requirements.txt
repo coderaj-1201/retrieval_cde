@@ -34,5 +34,11 @@ azure-identity==1.19.0
 azure-monitor-opentelemetry==1.6.4
 opentelemetry-sdk==1.29.0
 
+# ── Resilience ─────────────────────────────────────────────────────────────────
+tenacity==9.0.0
+
+# ── Redis (distributed rate limiting — required when REDIS_URL is set) ─────────
+redis==5.2.1
+
 # ── Utilities ──────────────────────────────────────────────────────────────────
 python-dotenv==1.0.1
