@@ -6,14 +6,15 @@ Entry point for all queries. Calls Orchestrator via HTTP.
 Endpoints:
   POST /query          — main RAG query
   POST /feedback       — submit thumbs-up/down + comment
-  GET  /feedback       — retrieve feedback by answer_id or user_id
-  GET  /chat-history   — retrieve conversation turns for a user/conversation
-  GET  /health         — deep health check (Cosmos + OpenAI probe)
+  GET  /feedback       — retrieve feedback (scoped by user_id or conversation_id)
+  GET  /chat-history   — retrieve conversation turns (scoped by conversation_id)
+  GET  /health         — liveness + readiness checks
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from contextlib import asynccontextmanager
 
@@ -21,13 +22,20 @@ import httpx
 import uvicorn
 from agent_framework import step, workflow
 from fastapi import FastAPI, Query, Request, Response, status
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
+from starlette.middleware.base import BaseHTTPMiddleware
 
+from shared.config import settings
 from shared.cosmos_client import (
     get_chat_container, get_feedback_container,
     probe_cosmos, upsert_document, query_documents, get_document,
+)
+from shared.escalation_client import (
+    connect_sme as sb_connect_sme,
+    is_escalation_configured,
+    raise_ticket as sb_raise_ticket,
 )
 from shared.logging_config import bind_context, configure_logging, get_logger
 from shared.memory import (
@@ -38,7 +46,6 @@ from shared.models import (
     ChatHistoryRecord, ConversationTurn, Domain, FeedbackRating,
     FeedbackRecord, FinalResponse, OrchestratorInput, QueryResponse, UserQuery,
 )
-from shared.config import settings
 from shared.rate_limiter import RateLimitExceeded, check_rate_limit
 import os
 from dotenv import load_dotenv
@@ -64,14 +71,51 @@ _ESCALATION_OPTIONS = {
     },
 }
 
+# Patterns that signal likely prompt injection attempts — logged as WARNING
+# but not rejected outright (LLM guardrails handle the actual defence).
+_INJECTION_PATTERNS = re.compile(
+    r"(ignore\s+(all\s+)?(previous|above|prior)\s+instructions"
+    r"|disregard\s+(all\s+)?instructions"
+    r"|you\s+are\s+now\s+"
+    r"|system\s+prompt"
+    r"|jailbreak)",
+    re.IGNORECASE,
+)
+
+
+# ── Payload size limit middleware ──────────────────────────────────────────────
+
+class _ContentSizeLimitMiddleware(BaseHTTPMiddleware):
+    """Reject requests with a body larger than 1 MB before they are read."""
+    _MAX_BYTES = 1_048_576  # 1 MB
+
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > self._MAX_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={"error": "payload_too_large", "max_bytes": self._MAX_BYTES},
+            )
+        return await call_next(request)
+
 
 # ── Pydantic request bodies ────────────────────────────────────────────────────
 
 class QueryBody(BaseModel):
-    text: str
+    text: str = Field(..., min_length=1, max_length=settings.MAX_QUERY_LENGTH)
     conversation_id: str | None = None
     user_id: str                = "anonymous"
-    idempotency_key: str | None = None   # optional — prevents duplicate processing on retry
+    idempotency_key: str | None = None
+
+    @field_validator("text")
+    @classmethod
+    def sanitise_text(cls, v: str) -> str:
+        # Strip control characters (null bytes, BEL, BS, etc.) but keep
+        # printable unicode, tabs, and newlines.
+        v = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", v).strip()
+        if not v:
+            raise ValueError("Query text is empty after sanitisation.")
+        return v
 
 
 class FeedbackBody(BaseModel):
@@ -80,7 +124,7 @@ class FeedbackBody(BaseModel):
     conversation_id: str
     user_id: str          = "anonymous"
     rating: FeedbackRating
-    comment: str          = ""
+    comment: str          = Field(default="", max_length=2000)
 
 
 # ── Workflow steps ─────────────────────────────────────────────────────────────
@@ -123,17 +167,56 @@ async def call_orchestrator(inp: OrchestratorInput) -> FinalResponse:
 
 
 @step
-async def handle_raise_ticket(user_id: str, conversation_id: str) -> QueryResponse:
-    ticket_id = f"TKT-{uuid.uuid4().hex[:8].upper()}"
-    logger.info("ticket_raised ticket_id=%s", ticket_id)
+async def handle_raise_ticket(
+    user_id: str,
+    conversation_id: str,
+    question_id: str,
+    question_text: str,
+    domain: str,
+) -> QueryResponse:
+    if is_escalation_configured():
+        try:
+            correlation_id = await asyncio.to_thread(
+                sb_raise_ticket,
+                user_id, conversation_id, question_id, question_text, domain,
+            )
+            answer = (
+                f"Your ticket has been raised. Reference: `{correlation_id}`. "
+                "Expected response within **4 business hours**."
+            )
+            logger.info(
+                "ticket_queued correlation_id=%s user_id=%s domain=%s",
+                correlation_id, user_id, domain,
+            )
+        except Exception as exc:
+            logger.error("ticket_queue_failed user_id=%s: %s", user_id, exc, exc_info=True)
+            correlation_id = f"REF-PENDING-{uuid.uuid4().hex[:6].upper()}"
+            answer = (
+                "Your escalation has been received but could not be queued automatically. "
+                "Please contact the support team directly. "
+                f"Reference: `{correlation_id}`."
+            )
+    else:
+        # Service Bus not configured — log clearly so this is never silently swallowed.
+        logger.error(
+            "ticket_queue_skipped: Service Bus not configured. "
+            "Set AZURE_SERVICE_BUS_NAMESPACE or AZURE_SERVICE_BUS_CONNECTION_STR."
+        )
+        correlation_id = f"REF-UNCONFIGURED-{uuid.uuid4().hex[:6].upper()}"
+        answer = (
+            "Escalation is not yet fully configured. "
+            "Please contact your support team directly. "
+            f"Reference: `{correlation_id}`."
+        )
+
     return QueryResponse(
         question_id=f"q-{uuid.uuid4().hex[:12]}",
         answer_id=f"ans-{uuid.uuid4().hex[:12]}",
         conversation_id=conversation_id,
         user_id=user_id,
         status="ticket_raised",
-        answer=f"✅ Ticket raised. Reference: `{ticket_id}`. Expected response: 4 business hours.",
-        domain="",
+        answer=answer,
+        domain=domain,
         confidence=1.0,
         attempts_used=0,
         tools_used=[],
@@ -143,16 +226,55 @@ async def handle_raise_ticket(user_id: str, conversation_id: str) -> QueryRespon
 
 
 @step
-async def handle_connect_sme(user_id: str, conversation_id: str) -> QueryResponse:
-    logger.info("sme_connect_requested user_id=%s", user_id)
+async def handle_connect_sme(
+    user_id: str,
+    conversation_id: str,
+    question_id: str,
+    question_text: str,
+    domain: str,
+) -> QueryResponse:
+    if is_escalation_configured():
+        try:
+            correlation_id = await asyncio.to_thread(
+                sb_connect_sme,
+                user_id, conversation_id, question_id, question_text, domain,
+            )
+            answer = (
+                f"You're being connected with an SME. Reference: `{correlation_id}`. "
+                "Expected response within **2 business hours**."
+            )
+            logger.info(
+                "sme_connect_queued correlation_id=%s user_id=%s domain=%s",
+                correlation_id, user_id, domain,
+            )
+        except Exception as exc:
+            logger.error("sme_queue_failed user_id=%s: %s", user_id, exc, exc_info=True)
+            correlation_id = f"REF-PENDING-{uuid.uuid4().hex[:6].upper()}"
+            answer = (
+                "Your SME request was received but could not be queued automatically. "
+                "Please contact the support team directly. "
+                f"Reference: `{correlation_id}`."
+            )
+    else:
+        logger.error(
+            "sme_queue_skipped: Service Bus not configured. "
+            "Set AZURE_SERVICE_BUS_NAMESPACE or AZURE_SERVICE_BUS_CONNECTION_STR."
+        )
+        correlation_id = f"REF-UNCONFIGURED-{uuid.uuid4().hex[:6].upper()}"
+        answer = (
+            "SME connection is not yet fully configured. "
+            "Please contact your support team directly. "
+            f"Reference: `{correlation_id}`."
+        )
+
     return QueryResponse(
         question_id=f"q-{uuid.uuid4().hex[:12]}",
         answer_id=f"ans-{uuid.uuid4().hex[:12]}",
         conversation_id=conversation_id,
         user_id=user_id,
         status="sme_connecting",
-        answer="✅ Connecting you with an SME. Expected response: 2 business hours.",
-        domain="",
+        answer=answer,
+        domain=domain,
         confidence=1.0,
         attempts_used=0,
         tools_used=[],
@@ -163,12 +285,24 @@ async def handle_connect_sme(user_id: str, conversation_id: str) -> QueryRespons
 
 @workflow(name="main_agent_workflow")
 async def main_agent_workflow(user_query: UserQuery) -> QueryResponse:
-    text = user_query.text.strip().lower()
+    text_lower = user_query.text.strip().lower()
 
-    if text == "raise_ticket":
-        return await handle_raise_ticket(user_query.user_id, user_query.conversation_id)
-    if text == "connect_sme":
-        return await handle_connect_sme(user_query.user_id, user_query.conversation_id)
+    if text_lower == "raise_ticket":
+        return await handle_raise_ticket(
+            user_id=user_query.user_id,
+            conversation_id=user_query.conversation_id,
+            question_id=user_query.question_id,
+            question_text=user_query.text,
+            domain="",
+        )
+    if text_lower == "connect_sme":
+        return await handle_connect_sme(
+            user_id=user_query.user_id,
+            conversation_id=user_query.conversation_id,
+            question_id=user_query.question_id,
+            question_text=user_query.text,
+            domain="",
+        )
 
     session = await load_session(user_query.conversation_id, user_query.user_id)
     ltm     = await load_ltm(user_query.user_id)
@@ -197,8 +331,11 @@ async def main_agent_workflow(user_query: UserQuery) -> QueryResponse:
         )
 
     is_success = final.status == "success"
-    # B2 fix: use .value on StrEnum, not str() which produces "Domain.HR"
-    domain_str = final.domain.value.upper() if isinstance(final.domain, Domain) else (final.domain or "")
+    domain_str = (
+        final.domain.value.upper()
+        if isinstance(final.domain, Domain)
+        else (final.domain or "")
+    )
 
     response = QueryResponse(
         question_id=user_query.question_id,
@@ -215,7 +352,7 @@ async def main_agent_workflow(user_query: UserQuery) -> QueryResponse:
         escalation_options=None if is_success else _ESCALATION_OPTIONS,
     )
 
-    # Persist to Cosmos
+    # Persist to Cosmos — fire-and-forget (failure logged inside upsert_document)
     upsert_document(get_chat_container(), ChatHistoryRecord(
         id=user_query.question_id,
         conversation_id=user_query.conversation_id,
@@ -231,7 +368,6 @@ async def main_agent_workflow(user_query: UserQuery) -> QueryResponse:
         status=final.status,
     ).to_dict())
 
-    # Short-term memory
     await append_turn(session, ConversationTurn(
         question_id=user_query.question_id,
         answer_id=final.answer_id,
@@ -242,32 +378,66 @@ async def main_agent_workflow(user_query: UserQuery) -> QueryResponse:
         tools_used=final.tools_used,
     ))
 
-    # Long-term memory — background, never blocks response
     if len(session.turns) % settings.LTM_SUMMARY_EVERY_N == 0:
-        asyncio.create_task(_run_ltm_update(user_query.user_id, session))
+        task = asyncio.create_task(
+            _run_ltm_update(user_query.user_id, session),
+            name=f"ltm-update-{user_query.user_id}",
+        )
+        task.add_done_callback(_ltm_task_done_callback)
 
     return response
 
 
+def _ltm_task_done_callback(task: asyncio.Task) -> None:
+    """Catch unhandled exceptions from the LTM background task."""
+    exc = task.exception() if not task.cancelled() else None
+    if exc:
+        logger.error(
+            "ltm_task_unhandled_exception task=%s: %s",
+            task.get_name(), exc, exc_info=exc,
+        )
+
+
 async def _run_ltm_update(user_id: str, session) -> None:
-    try:
-        await update_ltm(user_id, session)
-    except Exception as exc:
-        logger.error("ltm_update_failed user_id=%s: %s", user_id, exc)
+    """Run LTM update with a single retry on failure."""
+    for attempt in range(1, 3):
+        try:
+            await update_ltm(user_id, session)
+            return
+        except Exception as exc:
+            logger.error(
+                "ltm_update_failed user_id=%s attempt=%d/%d: %s",
+                user_id, attempt, 2, exc, exc_info=True,
+            )
+            if attempt < 2:
+                await asyncio.sleep(5)
 
 
 # ── FastAPI app ────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # B1 fix: probe_cosmos is blocking — run in thread pool, not event loop
+    # Register a global handler for any asyncio task that raises without being awaited.
+    loop = asyncio.get_event_loop()
+    loop.set_exception_handler(_asyncio_exception_handler)
+
     await asyncio.to_thread(probe_cosmos)
-    logger.info("main_agent_started")
+    logger.info("main_agent_started environment=%s", settings.ENVIRONMENT)
     yield
     logger.info("main_agent_stopped")
 
 
+def _asyncio_exception_handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+    exc = context.get("exception")
+    logger.error(
+        "asyncio_unhandled_exception msg=%s exc=%s",
+        context.get("message"), exc, exc_info=exc,
+    )
+
+
 app = FastAPI(title="RAG Main Agent", lifespan=lifespan)
+
+app.add_middleware(_ContentSizeLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -278,47 +448,52 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── F1: Deep health check ──────────────────────────────────────────────────────
 
-@app.get("/health")
-async def health() -> Response:
+# ── Health ─────────────────────────────────────────────────────────────────────
+
+@app.get("/health/live")
+async def liveness() -> dict:
+    """Always 200 while the process is alive — used for ACA liveness probe."""
+    return {"status": "alive", "agent": "main"}
+
+
+@app.get("/health/ready")
+async def readiness() -> Response:
+    """Returns 200 only when all dependencies are reachable — ACA readiness probe."""
     checks: dict[str, str] = {}
     overall_ok = True
 
-    # Cosmos probe
     try:
         await asyncio.to_thread(get_chat_container().read)
         checks["cosmos"] = "ok"
     except Exception as exc:
-        checks["cosmos"] = f"error: {exc}"
+        checks["cosmos"] = f"error: {type(exc).__name__}"
         overall_ok = False
 
-    # OpenAI probe — cheapest possible call
     try:
         from shared.azure_clients import get_openai_client
-        await asyncio.to_thread(
-            get_openai_client().models.list
-        )
+        await asyncio.to_thread(get_openai_client().models.list)
         checks["openai"] = "ok"
     except Exception as exc:
-        checks["openai"] = f"error: {exc}"
+        checks["openai"] = f"error: {type(exc).__name__}"
         overall_ok = False
 
-    # Orchestrator probe
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.get(f"{_ORCHESTRATOR_URL}/health")
-            checks["orchestrator"] = "ok" if r.status_code == 200 else f"status={r.status_code}"
-            if r.status_code != 200:
+            r = await client.get(f"{_ORCHESTRATOR_URL}/health/live")
+            if r.status_code == 200:
+                checks["orchestrator"] = "ok"
+            else:
+                checks["orchestrator"] = f"status={r.status_code}"
                 overall_ok = False
     except Exception as exc:
-        checks["orchestrator"] = f"error: {exc}"
+        checks["orchestrator"] = f"error: {type(exc).__name__}"
         overall_ok = False
 
     http_status = status.HTTP_200_OK if overall_ok else status.HTTP_503_SERVICE_UNAVAILABLE
     return Response(
         content=json.dumps({
-            "status": "healthy" if overall_ok else "degraded",
+            "status": "ready" if overall_ok else "degraded",
             "agent":  "main",
             "checks": checks,
         }),
@@ -327,29 +502,44 @@ async def health() -> Response:
     )
 
 
+# Keep /health as an alias for readiness so existing probes keep working.
+@app.get("/health")
+async def health() -> Response:
+    return await readiness()
+
+
 # ── POST /query ────────────────────────────────────────────────────────────────
 
 @app.post("/query")
 async def query(body: QueryBody) -> Response:
-    # F8: rate limit — returns 429 before any work is done
     try:
         check_rate_limit(body.user_id)
     except RateLimitExceeded as exc:
-        logger.warning("rate_limit_exceeded user_id=%s retry_after=%.1f", body.user_id, exc.retry_after)
+        logger.warning(
+            "rate_limit_exceeded user_id=%s retry_after=%.1f",
+            body.user_id, exc.retry_after,
+        )
         return Response(
             content=json.dumps({
                 "error":       "rate_limit_exceeded",
                 "retry_after": exc.retry_after,
-                "message":     f"Too many requests. Please wait {exc.retry_after}s before retrying.",
+                "message":     f"Too many requests. Please wait {exc.retry_after}s.",
             }),
             media_type="application/json",
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             headers={"Retry-After": str(exc.retry_after)},
         )
 
+    # Warn on potential prompt injection — do not reject (LLM guardrails handle it).
+    if _INJECTION_PATTERNS.search(body.text):
+        logger.warning(
+            "potential_prompt_injection_detected user_id=%s text_preview=%.80s",
+            body.user_id, body.text,
+        )
+
     conversation_id = body.conversation_id or str(uuid.uuid4())
 
-    # F2: idempotency — if key already processed, return cached result
+    # Idempotency — check Cosmos first so restarts don't lose the cache.
     if body.idempotency_key:
         cached = await asyncio.to_thread(
             get_document,
@@ -370,8 +560,6 @@ async def query(body: QueryBody) -> Response:
         text=body.text,
         conversation_id=conversation_id,
         user_id=body.user_id,
-        # Use idempotency_key as question_id when provided so the caller
-        # can correlate retries to the same Cosmos record
         question_id=body.idempotency_key or f"q-{uuid.uuid4().hex[:12]}",
     )
     bind_context(
@@ -446,7 +634,7 @@ async def feedback_post(body: FeedbackBody) -> Response:
     )
 
 
-# ── F3: GET /feedback ──────────────────────────────────────────────────────────
+# ── GET /feedback ──────────────────────────────────────────────────────────────
 
 @app.get("/feedback")
 async def feedback_get(
@@ -458,16 +646,9 @@ async def feedback_get(
 ) -> Response:
     bind_context(agent="main", user_id=user_id)
 
-    if answer_id:
-        cosmos_query = (
-            "SELECT * FROM c WHERE c.answer_id = @answer_id AND c.type = 'feedback' "
-            "ORDER BY c.timestamp DESC OFFSET 0 LIMIT @limit"
-        )
-        params = [
-            {"name": "@answer_id", "value": answer_id},
-            {"name": "@limit",     "value": limit},
-        ]
-    elif question_id:
+    # feedback container is partitioned by /question_id.
+    # Scope to a single partition whenever question_id is available.
+    if question_id:
         cosmos_query = (
             "SELECT * FROM c WHERE c.question_id = @question_id AND c.type = 'feedback' "
             "ORDER BY c.timestamp DESC OFFSET 0 LIMIT @limit"
@@ -476,6 +657,22 @@ async def feedback_get(
             {"name": "@question_id", "value": question_id},
             {"name": "@limit",       "value": limit},
         ]
+        docs = query_documents(
+            get_feedback_container(), cosmos_query, params,
+            partition_key=question_id,
+        )
+    elif answer_id:
+        # answer_id is not the partition key — cross-partition required.
+        # This is an admin/analytics path; the WARNING in query_documents is intentional.
+        cosmos_query = (
+            "SELECT * FROM c WHERE c.answer_id = @answer_id AND c.type = 'feedback' "
+            "ORDER BY c.timestamp DESC OFFSET 0 LIMIT @limit"
+        )
+        params = [
+            {"name": "@answer_id", "value": answer_id},
+            {"name": "@limit",     "value": limit},
+        ]
+        docs = query_documents(get_feedback_container(), cosmos_query, params)
     elif conversation_id:
         cosmos_query = (
             "SELECT * FROM c WHERE c.conversation_id = @conv_id AND c.type = 'feedback' "
@@ -485,6 +682,7 @@ async def feedback_get(
             {"name": "@conv_id", "value": conversation_id},
             {"name": "@limit",   "value": limit},
         ]
+        docs = query_documents(get_feedback_container(), cosmos_query, params)
     else:
         cosmos_query = (
             "SELECT * FROM c WHERE c.user_id = @user_id AND c.type = 'feedback' "
@@ -494,11 +692,10 @@ async def feedback_get(
             {"name": "@user_id", "value": user_id},
             {"name": "@limit",   "value": limit},
         ]
+        docs = query_documents(get_feedback_container(), cosmos_query, params)
 
-    docs = query_documents(get_feedback_container(), cosmos_query, params)
     clean = [{k: v for k, v in d.items() if not k.startswith("_")} for d in docs]
 
-    # Aggregate rating summary when querying by answer_id or question_id
     summary: dict | None = None
     if answer_id or question_id:
         counts: dict[str, int] = {}
@@ -522,8 +719,13 @@ async def chat_history(
     limit:           int        = Query(default=20, ge=1, le=100),
 ) -> Response:
     bind_context(agent="main", conversation_id=conversation_id or "", user_id=user_id)
-    logger.info("chat_history_requested conversation_id=%s user_id=%s", conversation_id, user_id)
+    logger.info(
+        "chat_history_requested conversation_id=%s user_id=%s",
+        conversation_id, user_id,
+    )
 
+    # chat-history is partitioned by /conversation_id.
+    # Scope to a single partition when conversation_id is provided.
     if conversation_id:
         cosmos_query = (
             "SELECT * FROM c WHERE c.conversation_id = @conv_id AND c.type = 'chat_history' "
@@ -533,7 +735,13 @@ async def chat_history(
             {"name": "@conv_id", "value": conversation_id},
             {"name": "@limit",   "value": limit},
         ]
+        docs = query_documents(
+            get_chat_container(), cosmos_query, params,
+            partition_key=conversation_id,
+        )
     else:
+        # user_id query on a conversation_id-partitioned container → cross-partition.
+        # This is an admin/analytics path.
         cosmos_query = (
             "SELECT * FROM c WHERE c.user_id = @user_id AND c.type = 'chat_history' "
             "ORDER BY c.timestamp DESC OFFSET 0 LIMIT @limit"
@@ -542,8 +750,8 @@ async def chat_history(
             {"name": "@user_id", "value": user_id},
             {"name": "@limit",   "value": limit},
         ]
+        docs = query_documents(get_chat_container(), cosmos_query, params)
 
-    docs  = query_documents(get_chat_container(), cosmos_query, params)
     clean = [{k: v for k, v in d.items() if not k.startswith("_")} for d in docs]
     return Response(
         content=json.dumps({"count": len(clean), "history": clean}),
