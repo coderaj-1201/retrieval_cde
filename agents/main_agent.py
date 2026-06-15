@@ -365,7 +365,7 @@ async def main_agent_workflow(user_query: UserQuery) -> QueryResponse:
             escalation_options=_ESCALATION_OPTIONS,
         )
 
-    is_success = final.status == "success"
+    is_success = final.status in ("success", "out_of_scope")
     domain_str = (
         final.domain.value.upper()
         if isinstance(final.domain, Domain)
