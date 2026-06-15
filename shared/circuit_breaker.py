@@ -59,6 +59,7 @@ class CircuitBreaker:
         self._state        = _State.CLOSED
         self._fail_count   = 0
         self._opened_at: float | None = None
+        self._probing      = False   # True while a HALF_OPEN probe is in-flight
         self._lock         = asyncio.Lock()
 
     @property
@@ -79,13 +80,19 @@ class CircuitBreaker:
                         retry_after=self.reset_timeout - elapsed,
                     )
                 # Probe window elapsed — allow one request through
-                self._state = _State.HALF_OPEN
+                self._state   = _State.HALF_OPEN
+                self._probing = True
                 logger.info("circuit_half_open name=%s", self.name)
+            elif self._state == _State.HALF_OPEN:
+                # Only one probe at a time; all others fast-fail
+                if self._probing:
+                    raise CircuitOpenError(self.name, retry_after=self.reset_timeout)
 
         try:
             result = await fn(*args, **kwargs)
         except Exception as exc:
             async with self._lock:
+                self._probing    = False
                 self._fail_count += 1
                 if self._state == _State.HALF_OPEN or self._fail_count >= self.fail_max:
                     self._state     = _State.OPEN
@@ -106,6 +113,7 @@ class CircuitBreaker:
             self._state      = _State.CLOSED
             self._fail_count = 0
             self._opened_at  = None
+            self._probing    = False
 
         return result
 
@@ -114,4 +122,5 @@ class CircuitBreaker:
             "name":       self.name,
             "state":      self._state.value,
             "fail_count": self._fail_count,
+            "opened_at":  self._opened_at,
         }

@@ -29,7 +29,7 @@ def test_retrieval_result_passed_above_threshold():
         attempt=1, answer="a", confidence=0.9, sources=[],
         conversation_id="c", user_id="u",
     )
-    with patch("shared.models.settings") as m:
+    with patch("shared.config.settings") as m:
         m.CONFIDENCE_THRESHOLD = 0.75
         assert r.passed is True
 
@@ -41,7 +41,7 @@ def test_retrieval_result_failed_below_threshold():
         attempt=1, answer="a", confidence=0.4, sources=[],
         conversation_id="c", user_id="u",
     )
-    with patch("shared.models.settings") as m:
+    with patch("shared.config.settings") as m:
         m.CONFIDENCE_THRESHOLD = 0.75
         assert r.passed is False
 

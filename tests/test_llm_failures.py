@@ -367,8 +367,9 @@ class TestLTMUpdateLLMFailures:
             domain="HR", confidence=0.9, tools_used=["hybrid"],
         )]
 
-        with patch("shared.memory.get_document", return_value=None), \
-             patch("shared.memory.get_openai_client") as m, \
+        with patch("shared.memory.get_ltm_container"), \
+             patch("shared.memory.get_document", return_value=None), \
+             patch("shared.azure_clients.get_openai_client") as m, \
              patch("shared.memory.upsert_document"):
             m.return_value.chat.completions.create.side_effect = RuntimeError("LLM down")
             # Must not raise
@@ -387,8 +388,9 @@ class TestLTMUpdateLLMFailures:
             domain="ops", confidence=0.8, tools_used=[],
         )]
 
-        with patch("shared.memory.get_document", return_value=None), \
-             patch("shared.memory.get_openai_client") as m, \
+        with patch("shared.memory.get_ltm_container"), \
+             patch("shared.memory.get_document", return_value=None), \
+             patch("shared.azure_clients.get_openai_client") as m, \
              patch("shared.memory.upsert_document"):
             m.return_value.chat.completions.create.return_value = _make_chat_response(
                 "This is prose, not JSON."

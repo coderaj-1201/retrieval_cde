@@ -291,9 +291,8 @@ class TestIdempotencyKey:
         import agents.main_agent as ma
 
         with patch("agents.main_agent.get_document", return_value=cached_doc), \
+             patch("agents.main_agent.get_chat_container"), \
              patch("agents.main_agent.main_agent_workflow") as mock_wf:
-            from fastapi import FastAPI
-            # Use the real endpoint
             client = TestClient(ma.app, raise_server_exceptions=False)
             resp = client.post("/query", json={
                 "text": "What is the policy?",

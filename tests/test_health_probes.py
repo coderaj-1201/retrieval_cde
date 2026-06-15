@@ -61,16 +61,15 @@ class TestMainAgentHealth:
         from fastapi.testclient import TestClient
         import agents.main_agent as ma
 
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
         with patch("agents.main_agent.get_chat_container") as mock_cc, \
-             patch("agents.main_agent.get_openai_client") as mock_oai, \
+             patch("shared.azure_clients.get_openai_client") as mock_oai, \
              patch("agents.main_agent._http") as mock_http:
             mock_cc.return_value.read.side_effect = Exception("Cosmos unreachable")
             mock_oai.return_value.models.list.return_value = MagicMock()
-            # Patch the orchestrator health probe call
-            mock_resp = MagicMock()
-            mock_resp.status_code = 200
-            if mock_http:
-                mock_http.get = AsyncMock(return_value=mock_resp)
+            mock_http.get = AsyncMock(return_value=mock_resp)
 
             client = TestClient(ma.app, raise_server_exceptions=False)
             resp = client.get("/health/ready")
@@ -90,7 +89,7 @@ class TestMainAgentHealth:
         mock_live_resp.status_code = 200
 
         with patch("agents.main_agent.get_chat_container") as mock_cc, \
-             patch("agents.main_agent.get_openai_client") as mock_oai, \
+             patch("shared.azure_clients.get_openai_client") as mock_oai, \
              patch("agents.main_agent._orchestrator_breaker") as mock_cb, \
              patch("agents.main_agent._http") as mock_http:
             mock_cc.return_value.read.return_value = None
@@ -113,7 +112,7 @@ class TestMainAgentHealth:
         mock_live_resp.status_code = 200
 
         with patch("agents.main_agent.get_chat_container") as mock_cc, \
-             patch("agents.main_agent.get_openai_client") as mock_oai, \
+             patch("shared.azure_clients.get_openai_client") as mock_oai, \
              patch("agents.main_agent._orchestrator_breaker") as mock_cb, \
              patch("agents.main_agent._http") as mock_http:
             mock_cc.return_value.read.return_value = None
@@ -146,7 +145,7 @@ class TestOrchestratorHealth:
         from agents.orchestrator_agent import app
 
         with patch("agents.orchestrator_agent._retrieval_breaker") as mock_cb, \
-             patch("agents.orchestrator_agent.get_chat_container") as mock_cc:
+             patch("shared.cosmos_client.get_chat_container") as mock_cc:
             mock_cb.to_dict.return_value = {"state": "open"}
             mock_cc.return_value.read.return_value = None
             client = TestClient(app, raise_server_exceptions=False)
@@ -159,7 +158,7 @@ class TestOrchestratorHealth:
         from agents.orchestrator_agent import app
 
         with patch("agents.orchestrator_agent._retrieval_breaker") as mock_cb, \
-             patch("agents.orchestrator_agent.get_chat_container") as mock_cc:
+             patch("shared.cosmos_client.get_chat_container") as mock_cc:
             mock_cb.to_dict.return_value = {"state": "closed"}
             mock_cc.return_value.read.return_value = None
             client = TestClient(app, raise_server_exceptions=False)
@@ -185,7 +184,7 @@ class TestRetrievalHealth:
         from fastapi.testclient import TestClient
         from agents.retrieval_agent import app
 
-        with patch("agents.retrieval_agent.get_chat_container") as mock_cc, \
+        with patch("shared.cosmos_client.get_chat_container") as mock_cc, \
              patch("agents.retrieval_agent.get_openai_client") as mock_oai:
             mock_cc.return_value.read.side_effect = Exception("Cosmos down")
             mock_oai.return_value.models.list.return_value = MagicMock()
@@ -199,7 +198,7 @@ class TestRetrievalHealth:
         from fastapi.testclient import TestClient
         from agents.retrieval_agent import app
 
-        with patch("agents.retrieval_agent.get_chat_container") as mock_cc, \
+        with patch("shared.cosmos_client.get_chat_container") as mock_cc, \
              patch("agents.retrieval_agent.get_openai_client") as mock_oai:
             mock_cc.return_value.read.return_value = None
             mock_oai.return_value.models.list.side_effect = Exception("OpenAI unreachable")
@@ -236,7 +235,6 @@ class TestInternalAuthOnAgents:
     def test_orchestrator_protected_endpoint_requires_secret(self):
         from fastapi.testclient import TestClient
         from agents.orchestrator_agent import app
-        from unittest.mock import MagicMock
 
         mock_settings = MagicMock()
         mock_settings.INTERNAL_API_SECRET = MagicMock()
@@ -249,7 +247,7 @@ class TestInternalAuthOnAgents:
                 json={"text": "test", "conversation_id": "c", "user_id": "u", "question_id": "q"},
                 headers={"X-Internal-Secret": "wrong-secret"},
             )
-        assert resp.status_code == 401
+            assert resp.status_code == 401
 
     def test_orchestrator_health_exempt_from_auth(self):
         """Health endpoints must always be accessible without auth header."""
@@ -260,15 +258,10 @@ class TestInternalAuthOnAgents:
         mock_settings.INTERNAL_API_SECRET = MagicMock()
         mock_settings.INTERNAL_API_SECRET.get_secret_value.return_value = "s3cr3t"
 
-        with patch("shared.auth_middleware.settings", mock_settings), \
-             patch("agents.orchestrator_agent._retrieval_breaker") as cb, \
-             patch("agents.orchestrator_agent.get_chat_container") as cc:
-            cb.to_dict.return_value = {"state": "closed"}
-            cc.return_value.read.return_value = None
+        with patch("shared.auth_middleware.settings", mock_settings):
             client = TestClient(app, raise_server_exceptions=False)
             resp = client.get("/health/live")   # no auth header
-
-        assert resp.status_code == 200
+            assert resp.status_code == 200
 
     def test_retrieval_protected_endpoint_requires_secret(self):
         from fastapi.testclient import TestClient
@@ -285,4 +278,4 @@ class TestInternalAuthOnAgents:
                 json={"query": "test", "domain": "ops", "tool": "hybrid",
                       "attempt": 1, "conversation_id": "c", "user_id": "u"},
             )
-        assert resp.status_code == 401
+            assert resp.status_code == 401

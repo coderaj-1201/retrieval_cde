@@ -231,7 +231,7 @@ class TestCrossDomainFanOut:
         async def _fanout_side_effect(req):
             if req.domain == Domain.HR:
                 call_count["primary"] += 1
-                raise RuntimeError("HR search down")
+                return None   # _call_retrieval_safe returns None on failure
             call_count["secondary"] += 1
             return secondary_result
 

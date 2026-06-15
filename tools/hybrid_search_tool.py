@@ -116,14 +116,13 @@ def hybrid_search(
         type_filter   = " or ".join(f"chunk_type eq '{t}'" for t in chunk_types)
         odata_filter += f" and ({type_filter})"
 
-    vector_query = VectorizedQuery(
-        vector=_embed(query),
-        k_nearest_neighbors=k,
-        fields="content_vector",
-        exhaustive=False,
-    )
-
     try:
+        vector_query = VectorizedQuery(
+            vector=_embed(query),
+            k_nearest_neighbors=k,
+            fields="content_vector",
+            exhaustive=False,
+        )
         raw_results = _search(client, query, vector_query, odata_filter, k)
         docs = [
             SearchDocument(

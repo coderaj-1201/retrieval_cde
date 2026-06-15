@@ -71,11 +71,11 @@ def _inprocess_check(user_id: str) -> None:
     burst       = settings.RATE_LIMIT_BURST
     refill_rate = rpm / 60.0
 
-    now = time.monotonic()
     with _lock:
+        now    = time.monotonic()
         bucket = _buckets.get(user_id)
         if bucket is None:
-            bucket = _Bucket(tokens=burst)
+            bucket = _Bucket(tokens=burst, last_refill=now)
             _buckets[user_id] = bucket
 
         elapsed       = now - bucket.last_refill

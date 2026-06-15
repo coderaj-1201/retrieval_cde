@@ -68,9 +68,14 @@ async def load_session(conversation_id: str, user_id: str) -> SessionMemory:
     if cached:
         return cached
 
-    doc = await asyncio.to_thread(
-        get_document, get_sessions_container(), conversation_id, conversation_id
-    )
+    try:
+        doc = await asyncio.to_thread(
+            get_document, get_sessions_container(), conversation_id, conversation_id
+        )
+    except Exception as exc:
+        logger.error("session_load_failed conversation_id=%s — starting fresh: %s", conversation_id, exc, exc_info=True)
+        doc = None
+
     if doc:
         turns = [ConversationTurn(**t) for t in doc.get("turns", [])]
         session = SessionMemory(
@@ -94,7 +99,10 @@ async def append_turn(session: SessionMemory, turn: ConversationTurn) -> None:
         session.turns = session.turns[-settings.SESSION_MAX_TURNS:]
     session.updated_at = datetime.now(timezone.utc).isoformat()
     await _session_cache.set(session.conversation_id, session)
-    await asyncio.to_thread(upsert_document, get_sessions_container(), session.to_dict())
+    try:
+        await asyncio.to_thread(upsert_document, get_sessions_container(), session.to_dict())
+    except Exception as exc:
+        logger.error("session_persist_failed conversation_id=%s: %s", session.conversation_id, exc, exc_info=True)
     logger.debug(
         "session_updated conversation_id=%s turns=%d",
         session.conversation_id, len(session.turns),
@@ -115,9 +123,13 @@ def format_session_context(session: SessionMemory) -> str:
 # ── Long-term memory ──────────────────────────────────────────────────────────
 
 async def load_ltm(user_id: str) -> LongTermMemoryRecord | None:
-    doc = await asyncio.to_thread(
-        get_document, get_ltm_container(), f"ltm-{user_id}", user_id
-    )
+    try:
+        doc = await asyncio.to_thread(
+            get_document, get_ltm_container(), f"ltm-{user_id}", user_id
+        )
+    except Exception as exc:
+        logger.error("ltm_load_failed user_id=%s: %s", user_id, exc, exc_info=True)
+        return None
     if doc:
         return LongTermMemoryRecord(
             id=doc["id"],

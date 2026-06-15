@@ -36,7 +36,8 @@ class TestCosmosFailures:
         async with _session_cache._lock:
             _session_cache._cache.clear()
 
-        with patch("shared.memory.get_document", side_effect=Exception("Cosmos timeout")):
+        with patch("shared.memory.get_sessions_container"), \
+             patch("shared.memory.get_document", side_effect=Exception("Cosmos timeout")):
             session = await load_session("new-conv-123", "user-1")
 
         assert session is not None
@@ -55,8 +56,9 @@ class TestCosmosFailures:
             domain="ops", confidence=0.9, tools_used=[],
         )
 
-        with patch("shared.memory.upsert_document", side_effect=Exception("Cosmos write failed")):
-            # Should not raise
+        with patch("shared.memory.get_sessions_container"), \
+             patch("shared.memory.upsert_document", side_effect=Exception("Cosmos write failed")):
+            # Should not raise — append_turn catches write errors since session is in-memory
             await append_turn(session, turn)
 
         assert len(session.turns) == 1  # turn was appended in memory even if Cosmos failed
@@ -66,7 +68,8 @@ class TestCosmosFailures:
         """If Cosmos LTM read fails, load_ltm returns None — no crash."""
         from shared.memory import load_ltm
 
-        with patch("shared.memory.get_document", side_effect=Exception("Network error")):
+        with patch("shared.memory.get_ltm_container"), \
+             patch("shared.memory.get_document", side_effect=Exception("Network error")):
             result = await load_ltm("user-1")
 
         assert result is None
@@ -409,7 +412,7 @@ class TestCircuitBreakerUnderLoad:
                 await cb.call(_fail)
 
         with patch("agents.orchestrator_agent._retrieval_breaker", cb), \
-             patch("agents.orchestrator_agent.get_chat_container") as mock_cc:
+             patch("shared.cosmos_client.get_chat_container") as mock_cc:
             mock_cc.return_value.read.return_value = None
             from fastapi.testclient import TestClient
             from agents.orchestrator_agent import app

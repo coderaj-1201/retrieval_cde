@@ -106,7 +106,8 @@ class TestSessionLRUCacheConcurrency:
             domain="ops", confidence=0.8, tools_used=[],
         )
 
-        with patch("shared.memory.upsert_document"):
+        with patch("shared.memory.upsert_document"), \
+             patch("shared.memory.get_sessions_container"):
             await asyncio.gather(
                 append_turn(session_a, turn_a),
                 append_turn(session_b, turn_b),
@@ -281,7 +282,8 @@ class TestSessionTurnWindow:
         session = SessionMemory(conversation_id="c-1", user_id="u-1")
 
         with patch("shared.memory.settings") as cfg, \
-             patch("shared.memory.upsert_document"):
+             patch("shared.memory.upsert_document"), \
+             patch("shared.memory.get_sessions_container"):
             cfg.SESSION_MAX_TURNS = 5
 
             for i in range(8):
