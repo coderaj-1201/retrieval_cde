@@ -42,6 +42,7 @@ from shared.models import (
     OrchestratorRequest, RetrievalResult, RetrievalTool, UserQuery,
 )
 from shared.retry import llm_retry
+from shared.telemetry import record_tool
 import os
 from dotenv import load_dotenv
 load_dotenv()
@@ -376,6 +377,7 @@ async def orchestrator_workflow(inp: OrchestratorInput) -> FinalResponse:
             "retrieval_attempt attempt=%d/%d domain=%s tool=%s cross_domain=%s",
             attempt, settings.MAX_RETRIEVAL_ATTEMPTS, domain, tool, is_cross_domain,
         )
+        record_tool(tool=tool.value, domain=domain.value)
 
         primary_req = OrchestratorRequest(
             query=user_query.text, domain=domain, tool=tool,

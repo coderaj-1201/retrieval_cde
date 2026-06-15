@@ -49,6 +49,7 @@ from shared.models import (
     FeedbackRecord, FinalResponse, OrchestratorInput, QueryResponse, UserQuery,
 )
 from shared.rate_limiter import RateLimitExceeded, check_rate_limit
+from shared.telemetry import record_attempts, record_confidence, record_escalation, record_query
 import os
 from dotenv import load_dotenv
 load_dotenv()
@@ -172,12 +173,6 @@ async def call_orchestrator(inp: OrchestratorInput) -> FinalResponse:
     }
     try:
         data = await _orchestrator_breaker.call(_do_orchestrate, payload)
-    except CircuitOpenError as exc:
-        logger.error(
-            "orchestrator_circuit_open retry_after=%.1f question_id=%s",
-            exc.retry_after, user_query.question_id,
-        )
-        raise
         domain_val = data.get("domain") or ""
         try:
             domain = Domain(domain_val.lower()) if domain_val else None
@@ -196,6 +191,12 @@ async def call_orchestrator(inp: OrchestratorInput) -> FinalResponse:
             answer_id=data.get("answer_id", f"ans-{uuid.uuid4().hex[:12]}"),
             tools_used=data.get("tools_used", []),
         )
+    except CircuitOpenError as exc:
+        logger.error(
+            "orchestrator_circuit_open retry_after=%.1f question_id=%s",
+            exc.retry_after, user_query.question_id,
+        )
+        raise
 
 
 @step
@@ -216,6 +217,7 @@ async def handle_raise_ticket(
                 f"Your ticket has been raised. Reference: `{correlation_id}`. "
                 "Expected response within **4 business hours**."
             )
+            record_escalation(escalation_type="raise_ticket", domain=domain or "unknown")
             logger.info(
                 "ticket_queued correlation_id=%s user_id=%s domain=%s",
                 correlation_id, user_id, domain,
@@ -275,6 +277,7 @@ async def handle_connect_sme(
                 f"You're being connected with an SME. Reference: `{correlation_id}`. "
                 "Expected response within **2 business hours**."
             )
+            record_escalation(escalation_type="connect_sme", domain=domain or "unknown")
             logger.info(
                 "sme_connect_queued correlation_id=%s user_id=%s domain=%s",
                 correlation_id, user_id, domain,
@@ -368,6 +371,10 @@ async def main_agent_workflow(user_query: UserQuery) -> QueryResponse:
         if isinstance(final.domain, Domain)
         else (final.domain or "")
     )
+    domain_metric = (final.domain.value if isinstance(final.domain, Domain) else (final.domain or "unknown")).lower()
+    record_query(domain=domain_metric, status=final.status, tool=final.tools_used[-1] if final.tools_used else "")
+    record_confidence(confidence=final.confidence, domain=domain_metric, status=final.status)
+    record_attempts(attempts=final.attempts_used, domain=domain_metric, status=final.status)
 
     response = QueryResponse(
         question_id=user_query.question_id,

@@ -44,25 +44,26 @@ def get_openai_client() -> AzureOpenAI:
         if settings.AZURE_OPENAI_API_KEY is not None
         else None
     )
+    # max_retries=0: tenacity decorators own retry logic; SDK retries would
+    # otherwise multiply attempts (SDK default is 2 retries × tenacity 3 = 6 calls).
+    # timeout=30: matches the minimum synthesis SLA; avoids hanging requests.
+    _OPENAI_KWARGS = dict(
+        azure_endpoint=str(settings.AZURE_OPENAI_ENDPOINT),
+        api_version=settings.AZURE_OPENAI_API_VERSION,
+        max_retries=0,
+        timeout=30.0,
+    )
     if api_key:
         import logging
         logging.getLogger(__name__).info("openai_auth=api_key (local dev)")
-        return AzureOpenAI(
-            azure_endpoint=str(settings.AZURE_OPENAI_ENDPOINT),
-            api_key=api_key,
-            api_version=settings.AZURE_OPENAI_API_VERSION,
-        )
+        return AzureOpenAI(api_key=api_key, **_OPENAI_KWARGS)
     import logging
     logging.getLogger(__name__).info("openai_auth=managed_identity")
     token_provider = get_bearer_token_provider(
         _credential(),
         "https://cognitiveservices.azure.com/.default",
     )
-    return AzureOpenAI(
-        azure_endpoint=str(settings.AZURE_OPENAI_ENDPOINT),
-        azure_ad_token_provider=token_provider,
-        api_version=settings.AZURE_OPENAI_API_VERSION,
-    )
+    return AzureOpenAI(azure_ad_token_provider=token_provider, **_OPENAI_KWARGS)
 
 
 @lru_cache(maxsize=1)
