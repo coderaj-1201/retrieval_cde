@@ -1,9 +1,14 @@
 """
 Azure client factories.
 
-Auth:
-  - OpenAI: API key (AZURE_OPENAI_API_KEY) if set, else DefaultAzureCredential
-  - AI Search: API key via AzureKeyCredential
+Auth strategy (production):
+  - OpenAI  : DefaultAzureCredential (managed identity). AZURE_OPENAI_API_KEY only for local dev.
+  - Search  : DefaultAzureCredential (managed identity). AZURE_SEARCH_API_KEY only for local dev.
+  - Cosmos  : DefaultAzureCredential (managed identity). COSMOS_KEY only for local dev.
+  - Foundry : DefaultAzureCredential always.
+
+None of the API keys should be present in production ACA environment variables.
+Their absence is what forces the managed-identity path — which is the desired state.
 """
 from __future__ import annotations
 
@@ -19,11 +24,9 @@ from openai import AzureOpenAI
 from shared.config import settings
 
 
-# def _credential() -> DefaultAzureCredential:
-#     return DefaultAzureCredential()
-
 def _credential() -> DefaultAzureCredential:
     return DefaultAzureCredential()
+
 
 @lru_cache(maxsize=1)
 def get_foundry_client() -> AIProjectClient:
@@ -35,15 +38,22 @@ def get_foundry_client() -> AIProjectClient:
 
 @lru_cache(maxsize=1)
 def get_openai_client() -> AzureOpenAI:
-    # Prefer API key for local dev — avoids RBAC token issues
-    api_key = settings.AZURE_OPENAI_API_KEY.get_secret_value() if settings.AZURE_OPENAI_API_KEY else None
+    # Guard: only call .get_secret_value() when the key is actually present.
+    api_key: str | None = (
+        settings.AZURE_OPENAI_API_KEY.get_secret_value()
+        if settings.AZURE_OPENAI_API_KEY is not None
+        else None
+    )
     if api_key:
+        import logging
+        logging.getLogger(__name__).info("openai_auth=api_key (local dev)")
         return AzureOpenAI(
             azure_endpoint=str(settings.AZURE_OPENAI_ENDPOINT),
             api_key=api_key,
             api_version=settings.AZURE_OPENAI_API_VERSION,
         )
-    # Fallback to managed identity (prod)
+    import logging
+    logging.getLogger(__name__).info("openai_auth=managed_identity")
     token_provider = get_bearer_token_provider(
         _credential(),
         "https://cognitiveservices.azure.com/.default",
@@ -57,16 +67,42 @@ def get_openai_client() -> AzureOpenAI:
 
 @lru_cache(maxsize=1)
 def get_search_client() -> SearchClient:
+    # Guard: only call .get_secret_value() when the key is actually present.
+    search_key: str | None = (
+        settings.AZURE_SEARCH_API_KEY.get_secret_value()
+        if settings.AZURE_SEARCH_API_KEY is not None
+        else None
+    )
+    if search_key:
+        import logging
+        logging.getLogger(__name__).info("search_auth=api_key (local dev)")
+        return SearchClient(
+            endpoint=str(settings.AZURE_SEARCH_ENDPOINT),
+            index_name=settings.AZURE_SEARCH_INDEX,
+            credential=AzureKeyCredential(search_key),
+        )
+    import logging
+    logging.getLogger(__name__).info("search_auth=managed_identity")
     return SearchClient(
         endpoint=str(settings.AZURE_SEARCH_ENDPOINT),
         index_name=settings.AZURE_SEARCH_INDEX,
-        credential=AzureKeyCredential(settings.AZURE_SEARCH_API_KEY.get_secret_value()),
+        credential=_credential(),
     )
 
 
 @lru_cache(maxsize=1)
 def get_search_index_client() -> SearchIndexClient:
+    search_key: str | None = (
+        settings.AZURE_SEARCH_API_KEY.get_secret_value()
+        if settings.AZURE_SEARCH_API_KEY is not None
+        else None
+    )
+    if search_key:
+        return SearchIndexClient(
+            endpoint=str(settings.AZURE_SEARCH_ENDPOINT),
+            credential=AzureKeyCredential(search_key),
+        )
     return SearchIndexClient(
         endpoint=str(settings.AZURE_SEARCH_ENDPOINT),
-        credential=AzureKeyCredential(settings.AZURE_SEARCH_API_KEY.get_secret_value()),
+        credential=_credential(),
     )
