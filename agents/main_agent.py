@@ -389,6 +389,8 @@ async def main_agent_workflow(user_query: UserQuery) -> QueryResponse:
         tools_used=final.tools_used,
         sources=final.sources,
         escalation_options=None if is_success else _ESCALATION_OPTIONS,
+        show_citations=final.show_citations,
+        citations=final.citations,
     )
 
     # Persist to Cosmos — fire-and-forget (failure logged inside upsert_document)

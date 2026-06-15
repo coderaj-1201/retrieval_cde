@@ -446,6 +446,8 @@ async def orchestrator_workflow(inp: OrchestratorInput) -> FinalResponse:
                 user_id=user_query.user_id,
                 question_id=user_query.question_id,
                 tools_used=tools_tried,
+                show_citations=result.show_citations,
+                citations=result.citations,
             )
 
         logger.warning(
@@ -467,6 +469,8 @@ async def orchestrator_workflow(inp: OrchestratorInput) -> FinalResponse:
         conversation_id=user_query.conversation_id,
         user_id=user_query.user_id,
         question_id=user_query.question_id,
+        show_citations=False,
+        citations=[],
         tools_used=tools_tried,
     )
 
