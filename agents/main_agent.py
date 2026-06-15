@@ -19,6 +19,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 import httpx
+import signal
 import uvicorn
 from agent_framework import step, workflow
 from fastapi import FastAPI, Query, Request, Response, status
@@ -27,6 +28,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from shared.circuit_breaker import CircuitBreaker, CircuitOpenError
 from shared.config import settings
 from shared.cosmos_client import (
     get_chat_container, get_feedback_container,
@@ -54,7 +56,18 @@ load_dotenv()
 configure_logging()
 logger = get_logger(__name__)
 
-_ORCHESTRATOR_URL = os.getenv("ORCHESTRATOR_URL")
+_ORCHESTRATOR_URL      = os.getenv("ORCHESTRATOR_URL")
+_http: httpx.AsyncClient | None = None          # shared client — set in lifespan
+_orchestrator_breaker  = CircuitBreaker(name="orchestrator-agent", fail_max=3, reset_timeout=30)
+
+
+def _internal_headers() -> dict[str, str]:
+    secret = (
+        settings.INTERNAL_API_SECRET.get_secret_value()
+        if settings.INTERNAL_API_SECRET is not None
+        else None
+    )
+    return {"X-Internal-Secret": secret} if secret else {}
 
 _ESCALATION_OPTIONS = {
     "raise_ticket": {
@@ -129,6 +142,19 @@ class FeedbackBody(BaseModel):
 
 # ── Workflow steps ─────────────────────────────────────────────────────────────
 
+async def _do_orchestrate(payload: dict) -> dict:
+    """Raw HTTP call to the orchestrator — wrapped by circuit breaker."""
+    global _http
+    client = _http or httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=120.0))
+    resp = await client.post(
+        f"{_ORCHESTRATOR_URL}/orchestrate",
+        json=payload,
+        headers=_internal_headers(),
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 @step
 async def call_orchestrator(inp: OrchestratorInput) -> FinalResponse:
     user_query      = inp.user_query
@@ -142,10 +168,14 @@ async def call_orchestrator(inp: OrchestratorInput) -> FinalResponse:
         "session_context": session_context,
         "ltm_context":     ltm_context,
     }
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(f"{_ORCHESTRATOR_URL}/orchestrate", json=payload)
-        resp.raise_for_status()
-        data = resp.json()
+    try:
+        data = await _orchestrator_breaker.call(_do_orchestrate, payload)
+    except CircuitOpenError as exc:
+        logger.error(
+            "orchestrator_circuit_open retry_after=%.1f question_id=%s",
+            exc.retry_after, user_query.question_id,
+        )
+        raise
         domain_val = data.get("domain") or ""
         try:
             domain = Domain(domain_val.lower()) if domain_val else None
@@ -417,14 +447,27 @@ async def _run_ltm_update(user_id: str, session) -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Register a global handler for any asyncio task that raises without being awaited.
+    global _http
+    _register_sigterm()
+
     loop = asyncio.get_event_loop()
     loop.set_exception_handler(_asyncio_exception_handler)
 
+    _http = httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=5.0),
+        limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+    )
     await asyncio.to_thread(probe_cosmos)
     logger.info("main_agent_started environment=%s", settings.ENVIRONMENT)
     yield
+    await _http.aclose()
     logger.info("main_agent_stopped")
+
+
+def _register_sigterm():
+    def _handler(signum, frame):
+        logger.info("main_agent_sigterm_received — draining in-flight requests")
+    signal.signal(signal.SIGTERM, _handler)
 
 
 def _asyncio_exception_handler(loop: asyncio.AbstractEventLoop, context: dict) -> None:
@@ -479,15 +522,21 @@ async def readiness() -> Response:
         overall_ok = False
 
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.get(f"{_ORCHESTRATOR_URL}/health/live")
-            if r.status_code == 200:
-                checks["orchestrator"] = "ok"
-            else:
-                checks["orchestrator"] = f"status={r.status_code}"
-                overall_ok = False
+        global _http
+        probe_client = _http or httpx.AsyncClient(timeout=5.0)
+        r = await probe_client.get(f"{_ORCHESTRATOR_URL}/health/live")
+        if r.status_code == 200:
+            checks["orchestrator"] = "ok"
+        else:
+            checks["orchestrator"] = f"status={r.status_code}"
+            overall_ok = False
     except Exception as exc:
         checks["orchestrator"] = f"error: {type(exc).__name__}"
+        overall_ok = False
+
+    cb = _orchestrator_breaker.to_dict()
+    checks["orchestrator_circuit"] = cb["state"]
+    if cb["state"] == "open":
         overall_ok = False
 
     http_status = status.HTTP_200_OK if overall_ok else status.HTTP_503_SERVICE_UNAVAILABLE
