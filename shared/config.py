@@ -41,9 +41,9 @@ class Settings(BaseSettings):
     # ── Azure AI Foundry ───────────────────────────────────────────────────────
     AZURE_FOUNDRY_PROJECT_ENDPOINT: AnyHttpUrl
     AZURE_OPENAI_ENDPOINT: AnyHttpUrl
-    AZURE_OPENAI_CHAT_DEPLOYMENT: str      = "gpt-4o"
-    AZURE_OPENAI_EMBEDDING_DEPLOYMENT: str = "text-embedding-ada-002"
-    AZURE_OPENAI_API_VERSION: str          = "2024-12-01-preview"
+    AZURE_OPENAI_CHAT_DEPLOYMENT: str      = "gpt-41-mini"
+    AZURE_OPENAI_EMBEDDING_DEPLOYMENT: str = "text-embedding-3-large"
+    AZURE_OPENAI_API_VERSION: str          = "2025-01-01-preview"
     # None → DefaultAzureCredential (managed identity). Must NOT be set in prod.
     AZURE_OPENAI_API_KEY: SecretStr | None = None
 
