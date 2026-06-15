@@ -1,18 +1,21 @@
 """
-Escalation client — sends escalation requests to Azure Service Bus.
+Escalation client — creates support tickets via Zendesk (primary) or
+Azure Service Bus (fallback when Zendesk is not configured).
 
-Auth priority:
-  1. AZURE_SERVICE_BUS_CONNECTION_STR set → connection string (local dev)
-  2. AZURE_SERVICE_BUS_NAMESPACE set      → DefaultAzureCredential (production)
+Priority:
+  1. Zendesk configured (ZENDESK_SUBDOMAIN + ZENDESK_API_TOKEN + ZENDESK_USER_EMAIL)
+     → ticket created via Zendesk REST API; real Zendesk ticket ID returned.
+  2. Service Bus configured (AZURE_SERVICE_BUS_NAMESPACE or CONNECTION_STR)
+     → message enqueued for downstream Logic App / webhook processing.
+  3. Neither configured → RuntimeError (surfaced as a 503 to the caller).
 
-The client sends a JSON message to SB_QUEUE_ESCALATION and returns a
-correlation_id immediately.  The Logic App subscribed to that queue handles
-ticket creation (ServiceNow/Jira) and posts back via webhook when the real
-ticket ID is available.
+The caller always receives a reference string:
+  - Zendesk path: "ZD-{ticket_id}"   (real Zendesk ticket number)
+  - Service Bus path: "REF-{hex}"     (provisional correlation ID)
 
-The `conversation_reference` field is stored on every escalation record so
-that a future proactive-message flow can reach the user in Teams once the
-real ticket ID arrives back.
+Zendesk field mapping:
+  raise_ticket → ticket with group_id=ZENDESK_GROUP_ID_TICKET, tag "raise_ticket"
+  connect_sme  → ticket with group_id=ZENDESK_GROUP_ID_SME,    tag "connect_sme"
 """
 from __future__ import annotations
 
@@ -20,15 +23,85 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from functools import lru_cache
+
+import httpx
 
 from shared.config import settings
 
 logger = logging.getLogger(__name__)
 
 
-def _get_sender():
-    """Return an azure-servicebus ServiceBusSender for the escalation queue."""
+# ── Zendesk ───────────────────────────────────────────────────────────────────
+
+def _zendesk_configured() -> bool:
+    return bool(
+        settings.ZENDESK_SUBDOMAIN
+        and settings.ZENDESK_API_TOKEN
+        and settings.ZENDESK_USER_EMAIL
+    )
+
+
+def _zendesk_create_ticket(
+    *,
+    subject: str,
+    body: str,
+    tags: list[str],
+    external_id: str,
+    group_id: int | None,
+    requester_email: str | None = None,
+) -> str:
+    """
+    POST a ticket to Zendesk and return its ID as "ZD-{id}".
+    Raises RuntimeError on HTTP errors (caller logs and surfaces to user).
+    """
+    ticket: dict = {
+        "subject":     subject,
+        "comment":     {"body": body},
+        "tags":        tags,
+        "external_id": external_id,
+        # Priority normal by default; Zendesk automation can escalate based on tags.
+        "priority":    "normal",
+    }
+    if requester_email:
+        ticket["requester"] = {"email": requester_email}
+    if group_id:
+        ticket["group_id"] = group_id
+
+    subdomain = settings.ZENDESK_SUBDOMAIN
+    user_email = settings.ZENDESK_USER_EMAIL
+    api_token = settings.ZENDESK_API_TOKEN.get_secret_value()  # type: ignore[union-attr]
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(
+                f"https://{subdomain}.zendesk.com/api/v2/tickets",
+                auth=(f"{user_email}/token", api_token),
+                json={"ticket": ticket},
+                headers={"Content-Type": "application/json"},
+            )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(
+            f"Zendesk API error {exc.response.status_code}: "
+            f"{exc.response.text[:300]}"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise RuntimeError(f"Zendesk request failed: {exc}") from exc
+
+    ticket_id = resp.json()["ticket"]["id"]
+    return f"ZD-{ticket_id}"
+
+
+# ── Service Bus (fallback) ─────────────────────────────────────────────────────
+
+def _sb_configured() -> bool:
+    return bool(
+        settings.AZURE_SERVICE_BUS_CONNECTION_STR
+        or settings.AZURE_SERVICE_BUS_NAMESPACE
+    )
+
+
+def _sb_get_sender():
     from azure.servicebus import ServiceBusClient  # type: ignore[import-untyped]
     from azure.identity import DefaultAzureCredential
 
@@ -38,30 +111,48 @@ def _get_sender():
         else None
     )
     if conn_str:
-        logger.debug("service_bus_auth=connection_string")
         sb_client = ServiceBusClient.from_connection_string(conn_str)
-    elif settings.AZURE_SERVICE_BUS_NAMESPACE:
-        logger.debug("service_bus_auth=managed_identity namespace=%s", settings.AZURE_SERVICE_BUS_NAMESPACE)
+    else:
         sb_client = ServiceBusClient(
             fully_qualified_namespace=settings.AZURE_SERVICE_BUS_NAMESPACE,
             credential=DefaultAzureCredential(),
         )
-    else:
-        raise RuntimeError(
-            "No Service Bus configuration found. "
-            "Set AZURE_SERVICE_BUS_CONNECTION_STR (dev) or "
-            "AZURE_SERVICE_BUS_NAMESPACE (prod)."
-        )
-
     return sb_client.get_queue_sender(queue_name=settings.SB_QUEUE_ESCALATION)
 
 
+def _sb_send(escalation_type: str, payload: dict, correlation_id: str) -> None:
+    from azure.servicebus import ServiceBusMessage  # type: ignore[import-untyped]
+
+    sender = _sb_get_sender()
+    with sender:
+        msg = ServiceBusMessage(
+            body=json.dumps(payload),
+            content_type="application/json",
+            subject=escalation_type,
+            message_id=correlation_id,
+            session_id=payload.get("user_id", ""),
+        )
+        try:
+            sender.send_messages(msg)
+        except Exception as send_exc:
+            logger.error(
+                "escalation_sb_send_failed type=%s correlation_id=%s "
+                "user_id=%s domain=%s payload=%s",
+                escalation_type,
+                correlation_id,
+                payload.get("user_id"),
+                payload.get("domain"),
+                json.dumps(payload),
+                exc_info=True,
+            )
+            raise
+
+
+# ── Public interface ───────────────────────────────────────────────────────────
+
 def is_escalation_configured() -> bool:
-    """Return True if Service Bus is configured — used to gate escalation paths."""
-    return bool(
-        settings.AZURE_SERVICE_BUS_CONNECTION_STR
-        or settings.AZURE_SERVICE_BUS_NAMESPACE
-    )
+    """True if at least one escalation channel is ready."""
+    return _zendesk_configured() or _sb_configured()
 
 
 def raise_ticket(
@@ -71,56 +162,73 @@ def raise_ticket(
     question_text: str,
     domain: str,
     conversation_reference: dict | None = None,
+    user_email: str | None = None,
 ) -> str:
     """
-    Send a ticket-creation request to Service Bus.
-    Returns a correlation_id that the caller shows to the user as a
-    provisional reference (e.g. "REF-abc123"). The real ticket ID
-    will arrive via the Logic App webhook callback.
-
-    Raises RuntimeError if Service Bus is not configured.
+    Create a support ticket.
+    Returns a reference string: "ZD-{id}" via Zendesk, "REF-{hex}" via SB.
+    Raises RuntimeError if no escalation channel is configured.
     """
-    from azure.servicebus import ServiceBusMessage  # type: ignore[import-untyped]
-
     correlation_id = f"REF-{uuid.uuid4().hex[:8].upper()}"
-    payload = {
-        "type":                   "raise_ticket",
-        "correlation_id":         correlation_id,
-        "user_id":                user_id,
-        "conversation_id":        conversation_id,
-        "question_id":            question_id,
-        "question_text":          question_text[:1000],  # cap to avoid huge messages
-        "domain":                 domain,
-        "timestamp":              datetime.now(timezone.utc).isoformat(),
-        "conversation_reference": conversation_reference or {},
-    }
+    timestamp = datetime.now(timezone.utc).isoformat()
 
-    sender = _get_sender()
-    with sender:
-        msg = ServiceBusMessage(
-            body=json.dumps(payload),
-            content_type="application/json",
-            subject="raise_ticket",
-            message_id=correlation_id,
-            session_id=user_id,        # group by user for ordered processing
+    if _zendesk_configured():
+        subject = f"[{domain.upper()}] Support request from Teams — {question_text[:60]}"
+        body = (
+            f"**Domain:** {domain}\n"
+            f"**Question:** {question_text}\n\n"
+            f"**Conversation ID:** {conversation_id}\n"
+            f"**User ID:** {user_id}\n"
+            f"**Question ID:** {question_id}\n"
+            f"**Timestamp:** {timestamp}\n"
         )
         try:
-            sender.send_messages(msg)
-        except Exception as send_exc:
-            # Log the full payload so ops can manually resubmit if needed.
-            logger.error(
-                "escalation_send_failed type=raise_ticket correlation_id=%s "
-                "user_id=%s domain=%s payload=%s",
-                correlation_id, user_id, domain, json.dumps(payload),
-                exc_info=True,
+            ref = _zendesk_create_ticket(
+                subject=subject,
+                body=body,
+                tags=["rag-bot", f"domain:{domain.lower()}", "raise_ticket"],
+                external_id=correlation_id,
+                group_id=settings.ZENDESK_GROUP_ID_TICKET,
+                requester_email=user_email,
             )
-            raise
+            logger.info(
+                "escalation_ticket_created via=zendesk ref=%s user_id=%s domain=%s",
+                ref, user_id, domain,
+            )
+            return ref
+        except Exception as exc:
+            logger.error(
+                "zendesk_ticket_failed correlation_id=%s user_id=%s domain=%s: %s",
+                correlation_id, user_id, domain, exc, exc_info=True,
+            )
+            if not _sb_configured():
+                raise RuntimeError(f"Ticket creation failed and no fallback configured: {exc}") from exc
+            logger.warning("escalation_fallback_to_servicebus correlation_id=%s", correlation_id)
 
-    logger.info(
-        "escalation_ticket_queued correlation_id=%s user_id=%s domain=%s",
-        correlation_id, user_id, domain,
+    if _sb_configured():
+        payload = {
+            "type":                   "raise_ticket",
+            "correlation_id":         correlation_id,
+            "user_id":                user_id,
+            "conversation_id":        conversation_id,
+            "question_id":            question_id,
+            "question_text":          question_text[:1000],
+            "domain":                 domain,
+            "timestamp":              timestamp,
+            "conversation_reference": conversation_reference or {},
+        }
+        _sb_send("raise_ticket", payload, correlation_id)
+        logger.info(
+            "escalation_ticket_queued via=service_bus correlation_id=%s user_id=%s domain=%s",
+            correlation_id, user_id, domain,
+        )
+        return correlation_id
+
+    raise RuntimeError(
+        "No escalation channel configured. "
+        "Set ZENDESK_SUBDOMAIN/ZENDESK_API_TOKEN/ZENDESK_USER_EMAIL "
+        "or AZURE_SERVICE_BUS_NAMESPACE."
     )
-    return correlation_id
 
 
 def connect_sme(
@@ -130,48 +238,72 @@ def connect_sme(
     question_text: str,
     domain: str,
     conversation_reference: dict | None = None,
+    user_email: str | None = None,
 ) -> str:
     """
-    Send an SME-connection request to Service Bus.
-    Returns a correlation_id shown to the user as a provisional reference.
+    Request SME connection via a Zendesk ticket (or Service Bus fallback).
+    Returns a reference string.
+    Raises RuntimeError if no escalation channel is configured.
     """
-    from azure.servicebus import ServiceBusMessage  # type: ignore[import-untyped]
-
     correlation_id = f"REF-{uuid.uuid4().hex[:8].upper()}"
-    payload = {
-        "type":                   "connect_sme",
-        "correlation_id":         correlation_id,
-        "user_id":                user_id,
-        "conversation_id":        conversation_id,
-        "question_id":            question_id,
-        "question_text":          question_text[:1000],
-        "domain":                 domain,
-        "timestamp":              datetime.now(timezone.utc).isoformat(),
-        "conversation_reference": conversation_reference or {},
-    }
+    timestamp = datetime.now(timezone.utc).isoformat()
 
-    sender = _get_sender()
-    with sender:
-        msg = ServiceBusMessage(
-            body=json.dumps(payload),
-            content_type="application/json",
-            subject="connect_sme",
-            message_id=correlation_id,
-            session_id=user_id,
+    if _zendesk_configured():
+        subject = f"[{domain.upper()}] SME connection request — {question_text[:60]}"
+        body = (
+            f"**SME Connection Request**\n\n"
+            f"**Domain:** {domain}\n"
+            f"**Question:** {question_text}\n\n"
+            f"**Conversation ID:** {conversation_id}\n"
+            f"**User ID:** {user_id}\n"
+            f"**Question ID:** {question_id}\n"
+            f"**Timestamp:** {timestamp}\n\n"
+            f"*Please connect the user with a subject matter expert for this query.*"
         )
         try:
-            sender.send_messages(msg)
-        except Exception as send_exc:
-            logger.error(
-                "escalation_send_failed type=connect_sme correlation_id=%s "
-                "user_id=%s domain=%s payload=%s",
-                correlation_id, user_id, domain, json.dumps(payload),
-                exc_info=True,
+            ref = _zendesk_create_ticket(
+                subject=subject,
+                body=body,
+                tags=["rag-bot", f"domain:{domain.lower()}", "connect_sme", "sme-request"],
+                external_id=correlation_id,
+                group_id=settings.ZENDESK_GROUP_ID_SME,
+                requester_email=user_email,
             )
-            raise
+            logger.info(
+                "escalation_sme_created via=zendesk ref=%s user_id=%s domain=%s",
+                ref, user_id, domain,
+            )
+            return ref
+        except Exception as exc:
+            logger.error(
+                "zendesk_sme_failed correlation_id=%s user_id=%s domain=%s: %s",
+                correlation_id, user_id, domain, exc, exc_info=True,
+            )
+            if not _sb_configured():
+                raise RuntimeError(f"SME connection failed and no fallback configured: {exc}") from exc
+            logger.warning("escalation_fallback_to_servicebus correlation_id=%s", correlation_id)
 
-    logger.info(
-        "escalation_sme_queued correlation_id=%s user_id=%s domain=%s",
-        correlation_id, user_id, domain,
+    if _sb_configured():
+        payload = {
+            "type":                   "connect_sme",
+            "correlation_id":         correlation_id,
+            "user_id":                user_id,
+            "conversation_id":        conversation_id,
+            "question_id":            question_id,
+            "question_text":          question_text[:1000],
+            "domain":                 domain,
+            "timestamp":              timestamp,
+            "conversation_reference": conversation_reference or {},
+        }
+        _sb_send("connect_sme", payload, correlation_id)
+        logger.info(
+            "escalation_sme_queued via=service_bus correlation_id=%s user_id=%s domain=%s",
+            correlation_id, user_id, domain,
+        )
+        return correlation_id
+
+    raise RuntimeError(
+        "No escalation channel configured. "
+        "Set ZENDESK_SUBDOMAIN/ZENDESK_API_TOKEN/ZENDESK_USER_EMAIL "
+        "or AZURE_SERVICE_BUS_NAMESPACE."
     )
-    return correlation_id

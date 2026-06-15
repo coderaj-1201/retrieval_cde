@@ -118,26 +118,40 @@ class TestCosmosFailures:
 # 2.  SERVICE BUS / ESCALATION FAILURES
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _no_escalation_settings():
+    """Settings mock with no escalation channel configured."""
+    cfg = MagicMock()
+    cfg.ZENDESK_SUBDOMAIN       = None
+    cfg.ZENDESK_API_TOKEN       = None
+    cfg.ZENDESK_USER_EMAIL      = None
+    cfg.AZURE_SERVICE_BUS_CONNECTION_STR = None
+    cfg.AZURE_SERVICE_BUS_NAMESPACE      = None
+    return cfg
+
+
+def _sb_only_settings(namespace="myns.servicebus.windows.net"):
+    cfg = _no_escalation_settings()
+    cfg.AZURE_SERVICE_BUS_NAMESPACE = namespace
+    cfg.SB_QUEUE_ESCALATION         = "escalation-requests"
+    return cfg
+
+
 class TestEscalationFailures:
 
     def test_escalation_not_configured_is_detected(self):
-        """When neither SB namespace nor connection string is set, must return False."""
+        """When neither Zendesk nor SB is set, is_escalation_configured returns False."""
         from shared.escalation_client import is_escalation_configured
 
-        with patch("shared.escalation_client.settings") as cfg:
-            cfg.AZURE_SERVICE_BUS_CONNECTION_STR = None
-            cfg.AZURE_SERVICE_BUS_NAMESPACE      = None
+        with patch("shared.escalation_client.settings", _no_escalation_settings()):
             assert is_escalation_configured() is False
 
-    def test_escalation_configured_with_namespace(self):
+    def test_escalation_configured_with_sb_namespace(self):
         from shared.escalation_client import is_escalation_configured
 
-        with patch("shared.escalation_client.settings") as cfg:
-            cfg.AZURE_SERVICE_BUS_CONNECTION_STR = None
-            cfg.AZURE_SERVICE_BUS_NAMESPACE      = "myns.servicebus.windows.net"
+        with patch("shared.escalation_client.settings", _sb_only_settings()):
             assert is_escalation_configured() is True
 
-    def test_raise_ticket_send_failure_logs_payload_and_raises(self, caplog):
+    def test_raise_ticket_sb_send_failure_logs_payload_and_raises(self, caplog):
         """Service Bus send failure must log full JSON payload and re-raise."""
         import logging
         from shared.escalation_client import raise_ticket
@@ -147,7 +161,8 @@ class TestEscalationFailures:
         mock_sender.__exit__  = MagicMock(return_value=False)
         mock_sender.send_messages.side_effect = RuntimeError("SB queue full")
 
-        with patch("shared.escalation_client._get_sender", return_value=mock_sender), \
+        with patch("shared.escalation_client.settings", _sb_only_settings()), \
+             patch("shared.escalation_client._sb_get_sender", return_value=mock_sender), \
              caplog.at_level(logging.ERROR, logger="shared.escalation_client"):
             with pytest.raises(RuntimeError, match="SB queue full"):
                 raise_ticket(
@@ -159,8 +174,8 @@ class TestEscalationFailures:
         assert any("payload" in m.lower() or "raise_ticket" in m.lower()
                    for m in error_msgs)
 
-    def test_connect_sme_send_failure_logs_payload_and_raises(self, caplog):
-        """connect_sme send failure must log full payload and re-raise."""
+    def test_connect_sme_sb_send_failure_logs_payload_and_raises(self, caplog):
+        """connect_sme SB send failure must log full payload and re-raise."""
         import logging
         from shared.escalation_client import connect_sme
 
@@ -169,7 +184,8 @@ class TestEscalationFailures:
         mock_sender.__exit__  = MagicMock(return_value=False)
         mock_sender.send_messages.side_effect = OSError("Connection refused")
 
-        with patch("shared.escalation_client._get_sender", return_value=mock_sender), \
+        with patch("shared.escalation_client.settings", _sb_only_settings()), \
+             patch("shared.escalation_client._sb_get_sender", return_value=mock_sender), \
              caplog.at_level(logging.ERROR, logger="shared.escalation_client"):
             with pytest.raises(OSError):
                 connect_sme(
@@ -181,23 +197,19 @@ class TestEscalationFailures:
         assert any("connect_sme" in m.lower() or "payload" in m.lower()
                    for m in error_msgs)
 
-    def test_raise_ticket_not_configured_main_agent_returns_fallback_message(self):
-        """When SB not configured, handle_raise_ticket must return a user-visible message."""
-        import asyncio
-        import sys
-        sys.modules.setdefault("agent_framework", _af_stub)
+    def test_raise_ticket_not_configured_raises_runtime(self):
+        """When nothing is configured, raise_ticket raises RuntimeError."""
+        from shared.escalation_client import raise_ticket
 
-        from shared.escalation_client import is_escalation_configured
-
-        with patch("shared.escalation_client.settings") as cfg:
-            cfg.AZURE_SERVICE_BUS_CONNECTION_STR = None
-            cfg.AZURE_SERVICE_BUS_NAMESPACE      = None
-            configured = is_escalation_configured()
-
-        assert configured is False  # Guard: subsequent main_agent call gives fallback
+        with patch("shared.escalation_client.settings", _no_escalation_settings()):
+            with pytest.raises(RuntimeError, match="No escalation channel"):
+                raise_ticket(
+                    user_id="u-1", conversation_id="c-1",
+                    question_id="q-1", question_text="Help me!", domain="hr",
+                )
 
     def test_raise_ticket_returns_unique_correlation_ids(self):
-        """Each raise_ticket call must produce a unique correlation ID."""
+        """Each raise_ticket call via SB must produce a unique correlation ID."""
         from shared.escalation_client import raise_ticket
 
         ids = []
@@ -205,7 +217,8 @@ class TestEscalationFailures:
         mock_sender.__enter__ = lambda s: s
         mock_sender.__exit__  = MagicMock(return_value=False)
 
-        with patch("shared.escalation_client._get_sender", return_value=mock_sender):
+        with patch("shared.escalation_client.settings", _sb_only_settings()), \
+             patch("shared.escalation_client._sb_get_sender", return_value=mock_sender):
             for i in range(5):
                 ids.append(raise_ticket(
                     user_id=f"u-{i}", conversation_id="c", question_id="q",

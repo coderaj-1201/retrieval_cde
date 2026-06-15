@@ -69,12 +69,26 @@ class Settings(BaseSettings):
     # Required in staging/production. Can be left empty in local dev only.
     INTERNAL_API_SECRET: SecretStr | None  = None
 
-    # ── Service Bus (escalation) ───────────────────────────────────────────────
+    # ── Service Bus (escalation fallback) ─────────────────────────────────────
     # Production: set AZURE_SERVICE_BUS_NAMESPACE only (managed identity).
     # Local dev: set AZURE_SERVICE_BUS_CONNECTION_STR (connection string).
+    # Service Bus is used ONLY when Zendesk is not configured.
     AZURE_SERVICE_BUS_NAMESPACE: str | None       = None
     AZURE_SERVICE_BUS_CONNECTION_STR: SecretStr | None = None
     SB_QUEUE_ESCALATION: str                      = "escalation-requests"
+
+    # ── Zendesk (primary escalation channel) ──────────────────────────────────
+    # Set all three to enable Zendesk ticket creation.
+    # ZENDESK_SUBDOMAIN : the part before .zendesk.com (e.g. "mycompany")
+    # ZENDESK_API_TOKEN : generated in Zendesk Admin → Apps → API → Token access
+    # ZENDESK_USER_EMAIL: the agent account used for API calls (must have ticket:write)
+    # ZENDESK_GROUP_ID_TICKET: optional group ID for ticket routing
+    # ZENDESK_GROUP_ID_SME   : optional group ID for SME-connection routing
+    ZENDESK_SUBDOMAIN:       str | None       = None
+    ZENDESK_API_TOKEN:       SecretStr | None = None
+    ZENDESK_USER_EMAIL:      str | None       = None
+    ZENDESK_GROUP_ID_TICKET: int | None       = None
+    ZENDESK_GROUP_ID_SME:    int | None       = None
 
     # ── RAG tuning ─────────────────────────────────────────────────────────────
     CONFIDENCE_THRESHOLD: float  = Field(default=0.75, ge=0.0, le=1.0)
