@@ -76,7 +76,7 @@ def _build_classify_system() -> str:
 
 Return ONLY JSON:
 {{
-  "domain": "{domain_values}",
+  "domain": "{domain_values}|none",
   "domain_confidence": <0.0-1.0>,
   "secondary_domain": "{domain_values}|none",
   "tool": "hybrid|hyde|decomposition",
@@ -85,18 +85,21 @@ Return ONLY JSON:
 
 domain:
 {domain_lines}
+none=question is not related to any enterprise domain (general knowledge, personal, celebrity, sports, etc.)
 
 domain_confidence:
 0.9+=certain
 <0.6=ambiguous
 
 secondary_domain:
-best alternate domain if confidence is low
+best alternate domain if confidence is low, otherwise "none"
 
 tool:
 hybrid=direct factual questions
 hyde=vague/conceptual questions
 decomposition=complex multi-part questions
+
+If the question is not enterprise-related, set domain="none" and domain_confidence=1.0.
 """
 
 
@@ -123,12 +126,14 @@ class ClassifyResult:
         secondary_domain: Domain | None,
         tool: RetrievalTool,
         failed: bool = False,
+        out_of_scope: bool = False,
     ) -> None:
         self.domain            = domain
         self.domain_confidence = domain_confidence
         self.secondary_domain  = secondary_domain
         self.tool              = tool
         self.failed            = failed
+        self.out_of_scope      = out_of_scope
 
 
 @step
@@ -165,6 +170,13 @@ async def classify_query(inp: ClassifyInput) -> ClassifyResult:
         return ClassifyResult(None, 0.0, None, RetrievalTool.HYBRID, failed=True)
 
     domain_raw = (raw.get("domain") or "").lower()
+
+    # LLM signalled that the question is outside enterprise scope.
+    _OUT_OF_SCOPE = {"none", "general", "out_of_scope", "unknown", "other", ""}
+    if domain_raw in _OUT_OF_SCOPE:
+        logger.info("classify_out_of_scope query_preview=%.60s domain_raw='%s'", inp.query, domain_raw)
+        return ClassifyResult(None, 0.0, None, RetrievalTool.HYBRID, failed=True, out_of_scope=True)
+
     try:
         domain = Domain(domain_raw)
     except ValueError:
@@ -330,8 +342,31 @@ async def orchestrator_workflow(inp: OrchestratorInput) -> FinalResponse:
         ltm_context=ltm_context,
     ))
 
-    # H-9: if classification failed entirely, return an error response immediately
-    # rather than silently defaulting to OPS and retrieving the wrong documents.
+    # Out-of-scope: question is not enterprise-related (e.g. celebrity trivia).
+    # Return a polite deflection rather than an error or silent fallback.
+    if classification.out_of_scope:
+        logger.info("classify_out_of_scope_deflect query_preview=%.60s", user_query.text)
+        return FinalResponse(
+            status="out_of_scope",
+            answer=(
+                "I'm IRONMAN AI Assistant and I'm only able to help with enterprise topics "
+                "such as HR policies, IT support, legal guidelines, and operational procedures. "
+                "I'm not able to answer general knowledge or personal questions. "
+                "Is there something work-related I can help you with?"
+            ),
+            domain=None,
+            sources=[],
+            confidence=1.0,
+            attempts_used=0,
+            conversation_id=user_query.conversation_id,
+            user_id=user_query.user_id,
+            question_id=user_query.question_id,
+            tools_used=[],
+            show_citations=False,
+            citations=[],
+        )
+
+    # H-9: if classification failed entirely (LLM/parse error), return an error.
     if classification.failed or classification.domain is None:
         logger.error(
             "classify_failed_returning_error query_preview=%.60s",
@@ -339,7 +374,7 @@ async def orchestrator_workflow(inp: OrchestratorInput) -> FinalResponse:
         )
         return FinalResponse(
             status="error",
-            answer="Unable to classify your query. Please rephrase and try again.",
+            answer="I wasn't able to process your query. Please rephrase and try again.",
             domain=None,
             sources=[],
             confidence=0.0,
@@ -348,6 +383,8 @@ async def orchestrator_workflow(inp: OrchestratorInput) -> FinalResponse:
             user_id=user_query.user_id,
             question_id=user_query.question_id,
             tools_used=[],
+            show_citations=False,
+            citations=[],
         )
 
     domain            = classification.domain
