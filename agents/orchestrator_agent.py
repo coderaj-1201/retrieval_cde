@@ -117,7 +117,7 @@ def _internal_headers() -> dict[str, str]:
 
 
 class ClassifyResult:
-    __slots__ = ("domain", "domain_confidence", "secondary_domain", "tool", "failed")
+    __slots__ = ("domain", "domain_confidence", "secondary_domain", "tool", "failed", "out_of_scope")
 
     def __init__(
         self,
