@@ -26,6 +26,21 @@ logger = logging.getLogger(__name__)
 # Allowlist guards against OData injection — must stay in sync with Domain enum.
 _VALID_DOMAINS: frozenset[str] = frozenset(d.value for d in Domain)
 
+# Fields that every search document must carry for synthesis to work correctly.
+_REQUIRED_DOC_FIELDS: tuple[str, ...] = ("id", "content")
+
+
+def _validate_search_doc(r: dict, idx: int) -> bool:
+    """Return True if the document has all required fields, else log and return False."""
+    for f in _REQUIRED_DOC_FIELDS:
+        if not r.get(f):
+            logger.warning(
+                "search_doc_schema_error idx=%d field_missing=%s doc_id=%s — skipping doc",
+                idx, f, r.get("id", "?"),
+            )
+            return False
+    return True
+
 
 @dataclass(frozen=True)
 class SearchDocument:
@@ -128,7 +143,8 @@ def hybrid_search(
                 section_subheading = r.get("section_subheading", ""),
                 table_raw          = r.get("table_raw", ""),
             )
-            for r in raw_results
+            for i, r in enumerate(raw_results)
+            if _validate_search_doc(r, i)
         ]
         docs.sort(key=lambda d: d.score, reverse=True)
         logger.debug(

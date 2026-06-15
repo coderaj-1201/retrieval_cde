@@ -82,6 +82,14 @@ class Settings(BaseSettings):
     RETRIEVAL_TOP_K: int         = Field(default=5,    ge=1,   le=20)
     SYNTHESIS_TEMPERATURE: float = Field(default=0.0,  ge=0.0, le=1.0)
     MAX_QUERY_LENGTH: int        = Field(default=2000, ge=50,  le=8000)
+    # Total character budget for the context block sent to the synthesis LLM.
+    # Prevents exceeding the model's context window on large document sets.
+    # gpt-4o context is ~128k tokens; 12000 chars ≈ ~3000 tokens, leaving
+    # plenty of room for the system prompt, question, and output.
+    SYNTHESIS_MAX_CONTEXT_CHARS: int = Field(default=12000, ge=2000, le=40000)
+    # Max source citations returned to the caller (additional sources still
+    # contribute to the synthesis context, only the citation list is capped).
+    SYNTHESIS_MAX_SOURCES: int   = Field(default=5,    ge=1,   le=10)
 
     # ── Memory ─────────────────────────────────────────────────────────────────
     SESSION_MAX_TURNS: int       = Field(default=10,     ge=1,   le=50)

@@ -146,10 +146,12 @@ async def _do_orchestrate(payload: dict) -> dict:
     """Raw HTTP call to the orchestrator — wrapped by circuit breaker."""
     global _http
     client = _http or httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=120.0))
+    # X-Request-ID threads the question_id through all agents for log correlation.
+    headers = {**_internal_headers(), "X-Request-ID": payload.get("question_id", "")}
     resp = await client.post(
         f"{_ORCHESTRATOR_URL}/orchestrate",
         json=payload,
-        headers=_internal_headers(),
+        headers=headers,
     )
     resp.raise_for_status()
     return resp.json()

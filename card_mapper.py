@@ -7,12 +7,28 @@ Two separate cards:
 from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote as _url_quote
+
+
+def _safe_url(url: str | None) -> str | None:
+    """Percent-encode a URL to make it safe for Adaptive Card markdown links.
+
+    Preserves all URL structural characters so the link still resolves.
+    Only encodes characters that would break the Markdown link syntax or
+    cause Adaptive Card rendering issues (principally unencoded spaces and
+    control characters).
+    """
+    if not url:
+        return None
+    # safe= keeps all valid URL chars intact; encodes spaces and control chars.
+    return _url_quote(url, safe=":/?=&%#+@!$,;")
 
 
 def normalize_sources(sources: Any) -> list[dict]:
     if not isinstance(sources, list):
         return []
-    seen = set()
+    seen_titles: set[str] = set()
+    seen_urls:   set[str] = set()
     result = []
     for i, s in enumerate(sources, start=1):
         if not isinstance(s, dict):
@@ -21,12 +37,19 @@ def normalize_sources(sources: Any) -> list[dict]:
             s.get("title") or s.get("name") or s.get("document_name")
             or s.get("documentName") or f"Source {i}"
         )
-        if title in seen:
+        raw_url = s.get("url") or s.get("source_url") or s.get("sourceUrl")
+        # Deduplicate by title AND by URL — same document may appear under
+        # different chunk titles when parent + child chunks are merged.
+        if title in seen_titles:
             continue
-        seen.add(title)
+        if raw_url and raw_url in seen_urls:
+            continue
+        seen_titles.add(title)
+        if raw_url:
+            seen_urls.add(raw_url)
         result.append({
             "title": title,
-            "url":   s.get("url") or s.get("source_url") or s.get("sourceUrl"),
+            "url":   _safe_url(raw_url),
             "page":  s.get("page") or s.get("page_number"),
         })
     return result

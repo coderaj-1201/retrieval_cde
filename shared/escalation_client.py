@@ -104,7 +104,17 @@ def raise_ticket(
             message_id=correlation_id,
             session_id=user_id,        # group by user for ordered processing
         )
-        sender.send_messages(msg)
+        try:
+            sender.send_messages(msg)
+        except Exception as send_exc:
+            # Log the full payload so ops can manually resubmit if needed.
+            logger.error(
+                "escalation_send_failed type=raise_ticket correlation_id=%s "
+                "user_id=%s domain=%s payload=%s",
+                correlation_id, user_id, domain, json.dumps(payload),
+                exc_info=True,
+            )
+            raise
 
     logger.info(
         "escalation_ticket_queued correlation_id=%s user_id=%s domain=%s",
@@ -149,7 +159,16 @@ def connect_sme(
             message_id=correlation_id,
             session_id=user_id,
         )
-        sender.send_messages(msg)
+        try:
+            sender.send_messages(msg)
+        except Exception as send_exc:
+            logger.error(
+                "escalation_send_failed type=connect_sme correlation_id=%s "
+                "user_id=%s domain=%s payload=%s",
+                correlation_id, user_id, domain, json.dumps(payload),
+                exc_info=True,
+            )
+            raise
 
     logger.info(
         "escalation_sme_queued correlation_id=%s user_id=%s domain=%s",

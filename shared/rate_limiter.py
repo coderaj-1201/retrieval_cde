@@ -32,7 +32,8 @@ from shared.config import settings
 
 logger = logging.getLogger(__name__)
 
-_WARNED_INPROCESS = False   # log the single-process warning once
+_WARNED_INPROCESS      = False   # log the single-process warning once
+_WARNED_REDIS_FALLBACK = False   # log the Redis→in-process fallback once per process start
 
 
 class RateLimitExceeded(Exception):
@@ -126,10 +127,17 @@ def _redis_check(user_id: str) -> None:
     smoothly rather than resetting hard at each minute boundary.
     A user gets RATE_LIMIT_RPM requests per rolling 60-second window.
     """
+    global _WARNED_REDIS_FALLBACK
     client = _get_redis()
     if client is None:
-        # Redis unavailable — fall back to in-process with a warning
-        logger.warning("rate_limiter_redis_unavailable: falling back to in-process for user=%s", user_id)
+        # Warn once per process activation — not per request — to avoid log flooding.
+        if not _WARNED_REDIS_FALLBACK:
+            logger.warning(
+                "rate_limiter_redis_unavailable: distributed rate limiting is disabled. "
+                "Falling back to in-process limiter — limits are enforced per replica only. "
+                "Set REDIS_URL to enable multi-replica-safe rate limiting."
+            )
+            _WARNED_REDIS_FALLBACK = True
         _inprocess_check(user_id)
         return
 

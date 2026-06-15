@@ -204,7 +204,29 @@ async def synthesize_answer(inp: SynthesisInput) -> tuple[str, float, list[Sourc
             context_parts.append(f"{label}\nSummary: {d.content}\nTable:\n{d.table_raw}")
         else:
             context_parts.append(f"{label}\n{d.content}")
-    context = "\n\n".join(context_parts)
+
+    # Apply context budget cap — prevents exceeding the model's context window
+    # when a large number of parent + child chunks are assembled.
+    max_chars     = settings.SYNTHESIS_MAX_CONTEXT_CHARS
+    budget        = max_chars
+    capped_parts: list[str] = []
+    for part in context_parts:
+        if budget <= 0:
+            break
+        if len(part) > budget:
+            capped_parts.append(part[:budget] + "\n[...truncated]")
+            budget = 0
+        else:
+            capped_parts.append(part)
+            budget -= len(part)
+
+    if len(capped_parts) < len(context_parts):
+        logger.warning(
+            "synthesis_context_truncated original_parts=%d included=%d max_chars=%d",
+            len(context_parts), len(capped_parts), max_chars,
+        )
+
+    context = "\n\n".join(capped_parts)
 
     @llm_retry
     def _call_llm():
@@ -242,15 +264,27 @@ async def synthesize_answer(inp: SynthesisInput) -> tuple[str, float, list[Sourc
         answer     = raw_content
         confidence = 0.5
 
-    sources = [
-        SourceDocument(
-            title=d.source,
+    # Build citation list with URL-based deduplication so that multiple chunks
+    # from the same document don't produce duplicate source cards.
+    seen_urls:   set[str] = set()
+    seen_titles: set[str] = set()
+    sources: list[SourceDocument] = []
+    for d in all_docs:
+        if len(sources) >= settings.SYNTHESIS_MAX_SOURCES:
+            break
+        url   = getattr(d, "doc_url", "") or ""
+        title = d.source
+        if (url and url in seen_urls) or title in seen_titles:
+            continue
+        if url:
+            seen_urls.add(url)
+        seen_titles.add(title)
+        sources.append(SourceDocument(
+            title=title,
             excerpt=d.content[:200],
-            url=getattr(d, "doc_url", ""),
+            url=url,
             relevance=round(d.score, 3),
-        )
-        for d in all_docs[:3]
-    ]
+        ))
 
     logger.info("synthesis_complete confidence=%.3f sources=%d", confidence, len(sources))
     return answer, confidence, sources

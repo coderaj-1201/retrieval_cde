@@ -38,7 +38,7 @@ from shared.config import settings
 from shared.cosmos_client import probe_cosmos
 from shared.logging_config import bind_context, configure_logging, get_logger
 from shared.models import (
-    ClassifyInput, Domain, FinalResponse, OrchestratorInput,
+    ClassifyInput, DOMAIN_DESCRIPTIONS, Domain, FinalResponse, OrchestratorInput,
     OrchestratorRequest, RetrievalResult, RetrievalTool, UserQuery,
 )
 from shared.retry import llm_retry
@@ -60,23 +60,30 @@ _http: httpx.AsyncClient | None = None
 # Circuit breaker for the Retrieval agent.
 _retrieval_breaker = CircuitBreaker(name="retrieval-agent", fail_max=3, reset_timeout=30)
 
-_CLASSIFY_SYSTEM = """
-Classify this enterprise query.
+
+def _build_classify_system() -> str:
+    """Build the classification system prompt dynamically from DOMAIN_DESCRIPTIONS.
+
+    Adding a new domain requires only updating the Domain enum and
+    DOMAIN_DESCRIPTIONS in shared/models.py — no prompt edits needed here.
+    """
+    domain_values = "|".join(d.value for d in Domain)
+    domain_lines  = "\n".join(
+        f"{d}={desc}" for d, desc in DOMAIN_DESCRIPTIONS.items()
+    )
+    return f"""Classify this enterprise query.
 
 Return ONLY JSON:
-{
-  "domain": "hr|legal|it|ops",
+{{
+  "domain": "{domain_values}",
   "domain_confidence": <0.0-1.0>,
-  "secondary_domain": "hr|legal|it|ops|none",
+  "secondary_domain": "{domain_values}|none",
   "tool": "hybrid|hyde|decomposition",
   "reason": "brief"
-}
+}}
 
 domain:
-hr=people/leave/payroll/benefits
-legal=contracts/compliance/GDPR/NDA
-it=tech/infra/software/access
-ops=operations/playbooks/race procedures/athlete guides/event rules/cutoff times/SOPs
+{domain_lines}
 
 domain_confidence:
 0.9+=certain
@@ -90,6 +97,9 @@ hybrid=direct factual questions
 hyde=vague/conceptual questions
 decomposition=complex multi-part questions
 """
+
+
+_CLASSIFY_SYSTEM = _build_classify_system()
 
 
 def _internal_headers() -> dict[str, str]:
@@ -202,10 +212,11 @@ async def _call_retrieval(req: OrchestratorRequest) -> RetrievalResult:
         "question_id":     req.question_id,
     }
     client = _http or httpx.AsyncClient(timeout=60.0)
+    headers = {**_internal_headers(), "X-Request-ID": req.question_id}
     resp = await client.post(
         f"{_RETRIEVAL_URL}/retrieve",
         json=payload,
-        headers=_internal_headers(),
+        headers=headers,
     )
     resp.raise_for_status()
     data = resp.json()
