@@ -18,8 +18,13 @@ from azure.search.documents.models import VectorizedQuery
 
 from shared.azure_clients import get_openai_client, get_search_client
 from shared.config import settings
+from shared.models import Domain
 
 logger = logging.getLogger(__name__)
+
+# Allowlist of valid domain values — guards against OData injection via the
+# domain parameter. Must stay in sync with the Domain enum.
+_VALID_DOMAINS: frozenset[str] = frozenset(d.value for d in Domain)
 
 
 @dataclass(frozen=True)
@@ -65,7 +70,17 @@ def hybrid_search(
     k = top_k or settings.RETRIEVAL_TOP_K
     client = get_search_client()
 
-    odata_filter = f"domain eq 'ops' and is_deleted eq false"
+    # Validate domain against the known allowlist before interpolating into the
+    # OData filter string. This prevents OData injection if domain ever comes
+    # from an untrusted path.
+    if domain not in _VALID_DOMAINS:
+        logger.error(
+            "hybrid_search_invalid_domain domain=%r — must be one of %s",
+            domain, sorted(_VALID_DOMAINS),
+        )
+        return []
+
+    odata_filter = f"domain eq '{domain}' and is_deleted eq false"
     if chunk_types:
         type_filter = " or ".join(f"chunk_type eq '{t}'" for t in chunk_types)
         odata_filter += f" and ({type_filter})"
