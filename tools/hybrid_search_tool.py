@@ -19,11 +19,11 @@ from azure.search.documents.models import VectorizedQuery
 from shared.azure_clients import get_openai_client, get_search_client
 from shared.config import settings
 from shared.models import Domain
+from shared.retry import llm_retry, search_retry
 
 logger = logging.getLogger(__name__)
 
-# Allowlist of valid domain values — guards against OData injection via the
-# domain parameter. Must stay in sync with the Domain enum.
+# Allowlist guards against OData injection — must stay in sync with Domain enum.
 _VALID_DOMAINS: frozenset[str] = frozenset(d.value for d in Domain)
 
 
@@ -45,9 +45,10 @@ class SearchDocument:
     title: str              = ""
     section_heading: str    = ""
     section_subheading: str = ""
-    table_raw: str          = ""   # non-empty only for chunk_type == "table"
+    table_raw: str          = ""
 
 
+@llm_retry
 def _embed(text: str) -> list[float]:
     resp = get_openai_client().embeddings.create(
         input=text,
@@ -56,23 +57,35 @@ def _embed(text: str) -> list[float]:
     return resp.data[0].embedding
 
 
+@search_retry
+def _search(client, search_text: str, vector_query, odata_filter: str, k: int):
+    return list(client.search(
+        search_text=search_text,
+        vector_queries=[vector_query],
+        filter=odata_filter,
+        query_type="semantic",
+        semantic_configuration_name=settings.AZURE_SEARCH_SEMANTIC_CONFIG,
+        top=k,
+        select=[
+            "id", "parent_id", "chunk_type", "domain",
+            "doc_name", "source", "doc_url", "file_type",
+            "page_number", "title", "section_heading", "section_subheading",
+            "content", "table_raw",
+        ],
+    ))
+
+
 def hybrid_search(
     query: str,
     domain: str,
     top_k: int | None = None,
-    chunk_types: list[str] | None = None,   # e.g. ["paragraph", "table"] to exclude headings
+    chunk_types: list[str] | None = None,
 ) -> list[SearchDocument]:
     """
     Single index hybrid search with OData domain filter.
     Optionally filter by chunk_type.
     Returns docs sorted by descending semantic reranker score.
     """
-    k = top_k or settings.RETRIEVAL_TOP_K
-    client = get_search_client()
-
-    # Validate domain against the known allowlist before interpolating into the
-    # OData filter string. This prevents OData injection if domain ever comes
-    # from an untrusted path.
     if domain not in _VALID_DOMAINS:
         logger.error(
             "hybrid_search_invalid_domain domain=%r — must be one of %s",
@@ -80,9 +93,12 @@ def hybrid_search(
         )
         return []
 
+    k      = top_k or settings.RETRIEVAL_TOP_K
+    client = get_search_client()
+
     odata_filter = f"domain eq '{domain}' and is_deleted eq false"
     if chunk_types:
-        type_filter = " or ".join(f"chunk_type eq '{t}'" for t in chunk_types)
+        type_filter   = " or ".join(f"chunk_type eq '{t}'" for t in chunk_types)
         odata_filter += f" and ({type_filter})"
 
     vector_query = VectorizedQuery(
@@ -93,21 +109,7 @@ def hybrid_search(
     )
 
     try:
-        results = client.search(
-            search_text=query,
-            vector_queries=[vector_query],
-            filter=odata_filter,
-            query_type="semantic",
-            semantic_configuration_name=settings.AZURE_SEARCH_SEMANTIC_CONFIG,
-            top=k,
-            select=[
-                "id", "parent_id", "chunk_type", "domain",
-                "doc_name", "source", "doc_url", "file_type",
-                "page_number", "title", "section_heading", "section_subheading",
-                "content", "table_raw",
-            ],
-        )
-
+        raw_results = _search(client, query, vector_query, odata_filter, k)
         docs = [
             SearchDocument(
                 id                 = r["id"],
@@ -126,7 +128,7 @@ def hybrid_search(
                 section_subheading = r.get("section_subheading", ""),
                 table_raw          = r.get("table_raw", ""),
             )
-            for r in results
+            for r in raw_results
         ]
         docs.sort(key=lambda d: d.score, reverse=True)
         logger.debug(
@@ -136,16 +138,12 @@ def hybrid_search(
         return docs
 
     except Exception as exc:
-        logger.error("Search error domain=%s: %s", domain, exc, exc_info=True)
+        logger.error("hybrid_search_error domain=%s: %s", domain, exc, exc_info=True)
         return []
 
 
 def fetch_parent_chunk(parent_id: str) -> SearchDocument | None:
-    """
-    Fetch a parent chunk by id for full-context retrieval.
-    Called by retrieval agent when a child chunk is matched —
-    sends the parent's full content to the LLM for better answers.
-    """
+    """Fetch a parent chunk by id for full-context retrieval."""
     if not parent_id:
         return None
     client = get_search_client()
