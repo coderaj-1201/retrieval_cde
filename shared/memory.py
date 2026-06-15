@@ -29,30 +29,42 @@ from shared.models import ConversationTurn, LongTermMemoryRecord, SessionMemory
 
 logger = logging.getLogger(__name__)
 
-# ── Process-local LRU cache for session memory (avoids Cosmos round-trip) ─────
-_SESSION_CACHE: OrderedDict[str, SessionMemory] = OrderedDict()
-_SESSION_CACHE_MAX = 200
+
+# ── Async-safe LRU cache for session memory ───────────────────────────────────
+# The plain OrderedDict implementation was not safe for concurrent asyncio
+# coroutines — two coroutines racing on move_to_end / popitem could raise
+# RuntimeError or silently corrupt the dict. This class serialises all
+# access through an asyncio.Lock.
+
+class _SessionLRUCache:
+    def __init__(self, max_size: int = 200) -> None:
+        self._cache: OrderedDict[str, SessionMemory] = OrderedDict()
+        self._max   = max_size
+        self._lock  = asyncio.Lock()
+
+    async def get(self, key: str) -> SessionMemory | None:
+        async with self._lock:
+            if key not in self._cache:
+                return None
+            self._cache.move_to_end(key)
+            return self._cache[key]
+
+    async def set(self, key: str, value: SessionMemory) -> None:
+        async with self._lock:
+            self._cache[key] = value
+            self._cache.move_to_end(key)
+            if len(self._cache) > self._max:
+                self._cache.popitem(last=False)
 
 
-def _cache_set(conv_id: str, session: SessionMemory) -> None:
-    _SESSION_CACHE[conv_id] = session
-    _SESSION_CACHE.move_to_end(conv_id)
-    if len(_SESSION_CACHE) > _SESSION_CACHE_MAX:
-        _SESSION_CACHE.popitem(last=False)
-
-
-def _cache_get(conv_id: str) -> SessionMemory | None:
-    if conv_id in _SESSION_CACHE:
-        _SESSION_CACHE.move_to_end(conv_id)
-        return _SESSION_CACHE[conv_id]
-    return None
+_session_cache = _SessionLRUCache(max_size=200)
 
 
 # ── Short-term memory ─────────────────────────────────────────────────────────
 
 async def load_session(conversation_id: str, user_id: str) -> SessionMemory:
     """Load session from cache → Cosmos → create new."""
-    cached = _cache_get(conversation_id)
+    cached = await _session_cache.get(conversation_id)
     if cached:
         return cached
 
@@ -71,7 +83,7 @@ async def load_session(conversation_id: str, user_id: str) -> SessionMemory:
     else:
         session = SessionMemory(conversation_id=conversation_id, user_id=user_id)
 
-    _cache_set(conversation_id, session)
+    await _session_cache.set(conversation_id, session)
     return session
 
 
@@ -81,9 +93,12 @@ async def append_turn(session: SessionMemory, turn: ConversationTurn) -> None:
     if len(session.turns) > settings.SESSION_MAX_TURNS:
         session.turns = session.turns[-settings.SESSION_MAX_TURNS:]
     session.updated_at = datetime.now(timezone.utc).isoformat()
-    _cache_set(session.conversation_id, session)
+    await _session_cache.set(session.conversation_id, session)
     await asyncio.to_thread(upsert_document, get_sessions_container(), session.to_dict())
-    logger.debug("session updated conversation_id=%s turns=%d", session.conversation_id, len(session.turns))
+    logger.debug(
+        "session_updated conversation_id=%s turns=%d",
+        session.conversation_id, len(session.turns),
+    )
 
 
 def format_session_context(session: SessionMemory) -> str:
