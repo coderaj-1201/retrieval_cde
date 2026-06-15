@@ -40,7 +40,13 @@ class Settings(BaseSettings):
 
     # ── Azure AI Foundry ───────────────────────────────────────────────────────
     AZURE_FOUNDRY_PROJECT_ENDPOINT: AnyHttpUrl
+    # Used for managed-identity auth (production).
     AZURE_OPENAI_ENDPOINT: AnyHttpUrl
+    # Used for API-key auth (local dev). Foundry resources expose a separate
+    # cognitiveservices.azure.com endpoint for key-based access.
+    # Format: https://<hub-name>.cognitiveservices.azure.com/
+    # Leave blank in production (managed identity uses AZURE_OPENAI_ENDPOINT).
+    AZURE_OPENAI_COGNITIVESERVICES_ENDPOINT: AnyHttpUrl | None = None
     AZURE_OPENAI_CHAT_DEPLOYMENT: str      = "gpt-41-mini"
     AZURE_OPENAI_EMBEDDING_DEPLOYMENT: str = "text-embedding-3-large"
     AZURE_OPENAI_API_VERSION: str          = "2025-01-01-preview"
