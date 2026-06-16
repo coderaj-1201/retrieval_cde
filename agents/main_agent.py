@@ -40,6 +40,7 @@ from shared.models import (
 )
 from shared.config import settings
 from shared.rate_limiter import RateLimitExceeded, check_rate_limit
+from card_mapper import normalize_sources
 import os
 from dotenv import load_dotenv
 load_dotenv()
@@ -200,6 +201,8 @@ async def main_agent_workflow(user_query: UserQuery) -> QueryResponse:
     # B2 fix: use .value on StrEnum, not str() which produces "Domain.HR"
     domain_str = final.domain.value.upper() if isinstance(final.domain, Domain) else (final.domain or "")
 
+    citations = normalize_sources(final.sources) if is_success else []
+
     response = QueryResponse(
         question_id=user_query.question_id,
         answer_id=final.answer_id,
@@ -213,6 +216,8 @@ async def main_agent_workflow(user_query: UserQuery) -> QueryResponse:
         tools_used=final.tools_used,
         sources=final.sources,
         escalation_options=None if is_success else _ESCALATION_OPTIONS,
+        citations=citations,
+        show_citations=is_success and bool(citations),
     )
 
     # Persist to Cosmos

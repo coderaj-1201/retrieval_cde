@@ -170,7 +170,9 @@ class QueryResponse:
     tools_used:         list[str]
     sources:            list[dict]
     escalation_options: dict | None
-    timestamp:          str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    citations:          list[dict] = field(default_factory=list)
+    show_citations:     bool       = False
+    timestamp:          str        = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> dict:
         return {
@@ -186,6 +188,8 @@ class QueryResponse:
             "tools_used":         self.tools_used,
             "sources":            self.sources,
             "escalation_options": self.escalation_options,
+            "citations":          self.citations,
+            "show_citations":     self.show_citations,
             "timestamp":          self.timestamp,
         }
 
