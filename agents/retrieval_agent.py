@@ -114,6 +114,7 @@ STRICT RULES
 OUTPUT FORMAT — always return valid JSON, nothing else
 ────────────────────────────────────────────
 {
+  "message_type": "greeting|general|knowledge",
   "answer": "<your formatted answer here — plain text with markdown>",
   "confidence": <float 0.0-1.0>,
   "escalation_recommended": <true|false>,
@@ -273,8 +274,16 @@ async def synthesize_answer(inp: SynthesisInput) -> tuple[str, float, list[Sourc
         answer        = str(parsed.get("answer", "")).strip()
         confidence    = float(parsed.get("confidence", 0.5))
         confidence    = round(min(max(confidence, 0.0), 1.0), 3)
-        show_citations = bool(parsed.get("show_citations", confidence >= 0.5))
+        message_type  = str(parsed.get("message_type", "knowledge")).strip().lower()
         llm_citations: list[dict] = parsed.get("citations") or []
+        # Derive show_citations in code rather than trusting the model's own
+        # flag — the model sometimes returns confidence>=0.5 with
+        # show_citations=false despite the prompt's rule, so the two fields
+        # can drift apart. Recomputing from message_type + confidence keeps
+        # them consistent regardless of what the model echoed back.
+        show_citations = message_type == "knowledge" and confidence >= 0.5
+        if not show_citations:
+            llm_citations = []
         if not answer:
             raise ValueError("Empty answer field in synthesis response.")
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
