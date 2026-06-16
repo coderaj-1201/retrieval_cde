@@ -314,6 +314,8 @@ async def _call_retrieval(req: OrchestratorRequest) -> RetrievalResult:
         conversation_id=data.get("conversation_id", req.conversation_id),
         user_id=data.get("user_id", req.user_id),
         question_id=data.get("question_id", req.question_id),
+        show_citations=bool(data.get("show_citations", False)),
+        citations=data.get("citations", []),
     )
 
 
