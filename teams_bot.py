@@ -239,8 +239,9 @@ class IronmanBot(ActivityHandler):
             )
 
         elif msg_status == "failure":
-            opts  = data.get("escalation_options", {})
-            lines = ["I wasn't able to find a confident answer."]
+            opts   = data.get("escalation_options", {})
+            answer = data.get("answer", "").strip()
+            lines  = [answer] if answer else ["I wasn't able to find a confident answer."]
             if opts:
                 lines.append("\nYou can escalate:")
                 for key, opt in opts.items():

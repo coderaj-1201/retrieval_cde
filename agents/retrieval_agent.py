@@ -70,16 +70,19 @@ Answer: "Hello! I'm IRONMAN AI Assistant. Ask me anything about HR policies, SOP
 Answer using ONLY the retrieved documents. Follow the formatting rules below.
 Evaluate your confidence honestly based on how well the documents answer the question.
 
-IF confidence < 0.5:
-  - Give a brief honest answer with what little you know
+IF you are not confident the documents answer the question well:
+  - Give a brief, honest, specific answer with what little you do know — this
+    text WILL be shown to the user, so make it useful, not a generic apology
   - Do NOT show any document citations
   - Recommend escalation
   - Set show_citations = false
+  - Score confidence honestly low (well below the midpoint)
 
-IF confidence >= 0.5:
+IF you are confident the documents answer the question well:
   - Give a full, well-formatted answer
   - Set show_citations = true
   - Each cited document must include its confidence contribution (see format below)
+  - Score confidence honestly high
 
 ────────────────────────────────────────────
 FORMATTING RULES (for confidence >= 0.5 answers)
@@ -277,12 +280,19 @@ async def synthesize_answer(inp: SynthesisInput) -> tuple[str, float, list[Sourc
         message_type  = str(parsed.get("message_type", "knowledge")).strip().lower()
         llm_citations: list[dict] = parsed.get("citations") or []
         # Derive show_citations in code rather than trusting the model's own
-        # flag — the model sometimes returns confidence>=0.5 with
+        # flag — the model sometimes returns confidence>=threshold with
         # show_citations=false despite the prompt's rule, so the two fields
         # can drift apart. Recomputing from message_type + confidence keeps
         # them consistent regardless of what the model echoed back.
-        show_citations = message_type == "knowledge" and confidence >= 0.5
-        if not show_citations:
+        show_citations = message_type == "knowledge" and confidence >= settings.CONFIDENCE_THRESHOLD
+        if show_citations:
+            # Drop individual weak citations even when the overall answer is
+            # confident enough to show citations at all.
+            llm_citations = [
+                c for c in llm_citations
+                if float(c.get("confidence", 0.0) or 0.0) >= settings.CONFIDENCE_THRESHOLD
+            ]
+        else:
             llm_citations = []
         if not answer:
             raise ValueError("Empty answer field in synthesis response.")

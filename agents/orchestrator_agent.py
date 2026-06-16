@@ -72,7 +72,9 @@ def _build_classify_system() -> str:
     domain_lines  = "\n".join(
         f"{d}={desc}" for d, desc in DOMAIN_DESCRIPTIONS.items()
     )
-    return f"""Classify this enterprise query.
+    return f"""Classify this enterprise query. You may be given prior session/long-term
+memory context above the question — use it to judge whether this question is a
+standalone query or a follow-up/continuation of an earlier turn.
 
 Return ONLY JSON:
 {{
@@ -80,6 +82,8 @@ Return ONLY JSON:
   "domain_confidence": <0.0-1.0>,
   "secondary_domain": "{domain_values}|none",
   "tool": "hybrid|hyde|decomposition",
+  "response_type": "clarify|decline",
+  "deflection_message": "<only when domain=none, see rules below>",
   "reason": "brief"
 }}
 
@@ -99,7 +103,28 @@ hybrid=direct factual questions
 hyde=vague/conceptual questions
 decomposition=complex multi-part questions
 
-If the question is not enterprise-related, set domain="none" and domain_confidence=1.0.
+If the question is not enterprise-related, set domain="none", domain_confidence=1.0, and:
+
+1. Decide response_type:
+   - "clarify" — the question is short, ambiguous, or relies on pronouns/context
+     ("it", "that", "this one", "what about...") in a way that suggests it's a
+     follow-up to the previous turn in the memory context, rather than a genuinely
+     unrelated topic.
+   - "decline" — the question is clearly unrelated to enterprise topics on its own
+     terms (celebrity trivia, sports scores, general knowledge, personal questions),
+     regardless of memory context.
+
+2. Write deflection_message as a short, warm, NON-REPETITIVE message in your own
+   words each time — never reuse the same exact wording across different
+   questions:
+   - If response_type="clarify": reference the likely prior topic from the memory
+     context and ask the user to confirm or rephrase, e.g. "Did you mean to follow
+     up on <prior topic>? Could you rephrase that in context?"
+   - If response_type="decline": briefly and politely note that the specific topic
+     they asked about (name it) isn't something you can help with, then redirect
+     them toward enterprise topics (HR, IT, Legal, Ops) you can help with instead.
+   - Keep it to 1-3 sentences. Do not use a generic template — tailor the wording
+     to the actual question each time.
 """
 
 
@@ -117,7 +142,10 @@ def _internal_headers() -> dict[str, str]:
 
 
 class ClassifyResult:
-    __slots__ = ("domain", "domain_confidence", "secondary_domain", "tool", "failed", "out_of_scope")
+    __slots__ = (
+        "domain", "domain_confidence", "secondary_domain", "tool", "failed",
+        "out_of_scope", "deflection_message",
+    )
 
     def __init__(
         self,
@@ -127,13 +155,15 @@ class ClassifyResult:
         tool: RetrievalTool,
         failed: bool = False,
         out_of_scope: bool = False,
+        deflection_message: str = "",
     ) -> None:
-        self.domain            = domain
-        self.domain_confidence = domain_confidence
-        self.secondary_domain  = secondary_domain
-        self.tool              = tool
-        self.failed            = failed
-        self.out_of_scope      = out_of_scope
+        self.domain              = domain
+        self.domain_confidence   = domain_confidence
+        self.secondary_domain    = secondary_domain
+        self.tool                = tool
+        self.failed              = failed
+        self.out_of_scope        = out_of_scope
+        self.deflection_message  = deflection_message
 
 
 @step
@@ -174,8 +204,26 @@ async def classify_query(inp: ClassifyInput) -> ClassifyResult:
     # LLM signalled that the question is outside enterprise scope.
     _OUT_OF_SCOPE = {"none", "general", "out_of_scope", "unknown", "other", ""}
     if domain_raw in _OUT_OF_SCOPE:
-        logger.info("classify_out_of_scope query_preview=%.60s domain_raw='%s'", inp.query, domain_raw)
-        return ClassifyResult(None, 0.0, None, RetrievalTool.HYBRID, failed=True, out_of_scope=True)
+        deflection_message = str(raw.get("deflection_message") or "").strip()
+        if not deflection_message:
+            # Fallback only if the model omitted it — still avoid a single
+            # fixed string by varying on response_type.
+            response_type = (raw.get("response_type") or "decline").lower()
+            deflection_message = (
+                "Could you clarify what you'd like to follow up on? "
+                "I can help with HR, IT, Legal, or Ops topics."
+                if response_type == "clarify" else
+                "That's outside what I can help with — I'm focused on enterprise "
+                "topics like HR, IT, Legal, and Ops. Anything in those areas I can help with?"
+            )
+        logger.info(
+            "classify_out_of_scope query_preview=%.60s domain_raw='%s' response_type=%s",
+            inp.query, domain_raw, raw.get("response_type"),
+        )
+        return ClassifyResult(
+            None, 0.0, None, RetrievalTool.HYBRID,
+            failed=True, out_of_scope=True, deflection_message=deflection_message,
+        )
 
     try:
         domain = Domain(domain_raw)
@@ -348,12 +396,7 @@ async def orchestrator_workflow(inp: OrchestratorInput) -> FinalResponse:
         logger.info("classify_out_of_scope_deflect query_preview=%.60s", user_query.text)
         return FinalResponse(
             status="out_of_scope",
-            answer=(
-                "I'm IRONMAN AI Assistant and I'm only able to help with enterprise topics "
-                "such as HR policies, IT support, legal guidelines, and operational procedures. "
-                "I'm not able to answer general knowledge or personal questions. "
-                "Is there something work-related I can help you with?"
-            ),
+            answer=classification.deflection_message,
             domain=None,
             sources=[],
             confidence=1.0,
@@ -498,7 +541,7 @@ async def orchestrator_workflow(inp: OrchestratorInput) -> FinalResponse:
     )
     return FinalResponse(
         status="failure",
-        answer="",
+        answer=last_result.answer if last_result else "",
         domain=domain,
         sources=last_result.sources if last_result else [],
         confidence=last_result.confidence if last_result else 0.0,
