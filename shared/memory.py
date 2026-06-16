@@ -29,36 +29,53 @@ from shared.models import ConversationTurn, LongTermMemoryRecord, SessionMemory
 
 logger = logging.getLogger(__name__)
 
-# ── Process-local LRU cache for session memory (avoids Cosmos round-trip) ─────
-_SESSION_CACHE: OrderedDict[str, SessionMemory] = OrderedDict()
-_SESSION_CACHE_MAX = 200
+
+# ── Async-safe LRU cache for session memory ───────────────────────────────────
+# The plain OrderedDict implementation was not safe for concurrent asyncio
+# coroutines — two coroutines racing on move_to_end / popitem could raise
+# RuntimeError or silently corrupt the dict. This class serialises all
+# access through an asyncio.Lock.
+
+class _SessionLRUCache:
+    def __init__(self, max_size: int = 200) -> None:
+        self._cache: OrderedDict[str, SessionMemory] = OrderedDict()
+        self._max   = max_size
+        self._lock  = asyncio.Lock()
+
+    async def get(self, key: str) -> SessionMemory | None:
+        async with self._lock:
+            if key not in self._cache:
+                return None
+            self._cache.move_to_end(key)
+            return self._cache[key]
+
+    async def set(self, key: str, value: SessionMemory) -> None:
+        async with self._lock:
+            self._cache[key] = value
+            self._cache.move_to_end(key)
+            if len(self._cache) > self._max:
+                self._cache.popitem(last=False)
 
 
-def _cache_set(conv_id: str, session: SessionMemory) -> None:
-    _SESSION_CACHE[conv_id] = session
-    _SESSION_CACHE.move_to_end(conv_id)
-    if len(_SESSION_CACHE) > _SESSION_CACHE_MAX:
-        _SESSION_CACHE.popitem(last=False)
-
-
-def _cache_get(conv_id: str) -> SessionMemory | None:
-    if conv_id in _SESSION_CACHE:
-        _SESSION_CACHE.move_to_end(conv_id)
-        return _SESSION_CACHE[conv_id]
-    return None
+_session_cache = _SessionLRUCache(max_size=200)
 
 
 # ── Short-term memory ─────────────────────────────────────────────────────────
 
 async def load_session(conversation_id: str, user_id: str) -> SessionMemory:
     """Load session from cache → Cosmos → create new."""
-    cached = _cache_get(conversation_id)
+    cached = await _session_cache.get(conversation_id)
     if cached:
         return cached
 
-    doc = await asyncio.to_thread(
-        get_document, get_sessions_container(), conversation_id, conversation_id
-    )
+    try:
+        doc = await asyncio.to_thread(
+            get_document, get_sessions_container(), conversation_id, conversation_id
+        )
+    except Exception as exc:
+        logger.error("session_load_failed conversation_id=%s — starting fresh: %s", conversation_id, exc, exc_info=True)
+        doc = None
+
     if doc:
         turns = [ConversationTurn(**t) for t in doc.get("turns", [])]
         session = SessionMemory(
@@ -71,7 +88,7 @@ async def load_session(conversation_id: str, user_id: str) -> SessionMemory:
     else:
         session = SessionMemory(conversation_id=conversation_id, user_id=user_id)
 
-    _cache_set(conversation_id, session)
+    await _session_cache.set(conversation_id, session)
     return session
 
 
@@ -81,9 +98,15 @@ async def append_turn(session: SessionMemory, turn: ConversationTurn) -> None:
     if len(session.turns) > settings.SESSION_MAX_TURNS:
         session.turns = session.turns[-settings.SESSION_MAX_TURNS:]
     session.updated_at = datetime.now(timezone.utc).isoformat()
-    _cache_set(session.conversation_id, session)
-    await asyncio.to_thread(upsert_document, get_sessions_container(), session.to_dict())
-    logger.debug("session updated conversation_id=%s turns=%d", session.conversation_id, len(session.turns))
+    await _session_cache.set(session.conversation_id, session)
+    try:
+        await asyncio.to_thread(upsert_document, get_sessions_container(), session.to_dict())
+    except Exception as exc:
+        logger.error("session_persist_failed conversation_id=%s: %s", session.conversation_id, exc, exc_info=True)
+    logger.debug(
+        "session_updated conversation_id=%s turns=%d",
+        session.conversation_id, len(session.turns),
+    )
 
 
 def format_session_context(session: SessionMemory) -> str:
@@ -100,9 +123,13 @@ def format_session_context(session: SessionMemory) -> str:
 # ── Long-term memory ──────────────────────────────────────────────────────────
 
 async def load_ltm(user_id: str) -> LongTermMemoryRecord | None:
-    doc = await asyncio.to_thread(
-        get_document, get_ltm_container(), f"ltm-{user_id}", user_id
-    )
+    try:
+        doc = await asyncio.to_thread(
+            get_document, get_ltm_container(), f"ltm-{user_id}", user_id
+        )
+    except Exception as exc:
+        logger.error("ltm_load_failed user_id=%s: %s", user_id, exc, exc_info=True)
+        return None
     if doc:
         return LongTermMemoryRecord(
             id=doc["id"],
@@ -126,6 +153,16 @@ async def update_ltm(user_id: str, session: SessionMemory) -> None:
     prior_summary = existing.summary if existing else ""
     prior_facts   = existing.key_facts if existing else []
 
+    # Bound the prior summary and facts to avoid token overflow on long-lived users.
+    prior_summary_bounded = prior_summary[:settings.LTM_MAX_SUMMARY_CHARS]
+    prior_facts_bounded   = prior_facts[:settings.LTM_MAX_FACTS]
+
+    if len(prior_summary) > settings.LTM_MAX_SUMMARY_CHARS:
+        logger.warning(
+            "ltm_summary_truncated user_id=%s original_len=%d bounded_len=%d",
+            user_id, len(prior_summary), settings.LTM_MAX_SUMMARY_CHARS,
+        )
+
     all_text = "\n".join(
         f"Q: {t.question}\nA: {t.answer}" for t in session.turns
     )
@@ -136,8 +173,8 @@ async def update_ltm(user_id: str, session: SessionMemory) -> None:
         "Return ONLY JSON: {\"summary\": \"...\", \"key_facts\": [\"...\", ...]}"
     )
     user_msg = (
-        f"Prior summary:\n{prior_summary}\n\n"
-        f"Prior key facts:\n{json.dumps(prior_facts)}\n\n"
+        f"Prior summary:\n{prior_summary_bounded}\n\n"
+        f"Prior key facts:\n{json.dumps(prior_facts_bounded)}\n\n"
         f"New turns:\n{all_text}"
     )
 
@@ -150,14 +187,17 @@ async def update_ltm(user_id: str, session: SessionMemory) -> None:
                 {"role": "user",   "content": user_msg},
             ],
             temperature=0,
-            max_tokens=500,
+            max_tokens=600,
             response_format={"type": "json_object"},
         )
         raw = json.loads(resp.choices[0].message.content)
-        summary    = raw.get("summary", prior_summary)
-        key_facts  = raw.get("key_facts", prior_facts)
+        summary    = raw.get("summary", prior_summary_bounded)
+        key_facts  = raw.get("key_facts", prior_facts_bounded)
     except Exception as exc:
-        logger.error("LTM update LLM call failed user_id=%s: %s", user_id, exc)
+        logger.error(
+            "ltm_update_llm_failed user_id=%s: %s",
+            user_id, exc, exc_info=True,
+        )
         return
 
     src_ids = list({*(existing.source_conversation_ids if existing else []), session.conversation_id})

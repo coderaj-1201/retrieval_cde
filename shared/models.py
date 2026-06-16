@@ -18,6 +18,17 @@ class Domain(StrEnum):
     OPS   = "ops"
 
 
+# Human-readable descriptions for each domain.
+# Used to build the LLM classification prompt dynamically so that adding a
+# new domain only requires adding it here + to the enum.
+DOMAIN_DESCRIPTIONS: dict[str, str] = {
+    Domain.HR:    "people / leave / payroll / benefits / recruitment / performance",
+    Domain.LEGAL: "contracts / compliance / GDPR / NDA / regulatory / IP",
+    Domain.IT:    "tech / infrastructure / software / access / security / systems",
+    Domain.OPS:   "operations / playbooks / procedures / event rules / SLAs / cutoff times / SOPs / athlete guides",
+}
+
+
 class RetrievalTool(StrEnum):
     HYBRID        = "hybrid"
     HYDE          = "hyde"
@@ -102,7 +113,9 @@ class RetrievalResult:
     sources:         list[dict]
     conversation_id: str
     user_id:         str
-    question_id:     str = ""
+    question_id:     str        = ""
+    show_citations:  bool       = False
+    citations:       list[dict] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -118,6 +131,8 @@ class RetrievalResult:
             "answer":          self.answer,
             "confidence":      self.confidence,
             "sources":         self.sources,
+            "show_citations":  self.show_citations,
+            "citations":       self.citations,
             "conversation_id": self.conversation_id,
             "user_id":         self.user_id,
             "question_id":     self.question_id,
@@ -137,6 +152,8 @@ class FinalResponse:
     question_id:   str         = ""
     answer_id:     str         = field(default_factory=lambda: f"ans-{uuid4().hex[:12]}")
     tools_used:    list[str]   = field(default_factory=list)
+    show_citations: bool       = False
+    citations:      list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -151,6 +168,8 @@ class FinalResponse:
             "question_id":     self.question_id,
             "answer_id":       self.answer_id,
             "tools_used":      [t.value if isinstance(t, RetrievalTool) else t for t in self.tools_used],
+            "show_citations":  self.show_citations,
+            "citations":       self.citations,
         }
 
 
@@ -170,6 +189,8 @@ class QueryResponse:
     tools_used:         list[str]
     sources:            list[dict]
     escalation_options: dict | None
+    show_citations:     bool       = False
+    citations:          list[dict] = field(default_factory=list)
     timestamp:          str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> dict:
@@ -186,6 +207,8 @@ class QueryResponse:
             "tools_used":         self.tools_used,
             "sources":            self.sources,
             "escalation_options": self.escalation_options,
+            "show_citations":     self.show_citations,
+            "citations":          self.citations,
             "timestamp":          self.timestamp,
         }
 

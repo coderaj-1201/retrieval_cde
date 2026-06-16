@@ -1,0 +1,131 @@
+# Local development compose — spins up all four services in dependency order.
+#
+# Prerequisites:
+#   1. Copy .env.template to .env and fill in local-dev values
+#      (AZURE_OPENAI_API_KEY, AZURE_SEARCH_API_KEY, COSMOS_KEY for key-based auth).
+#   2. Set ENVIRONMENT=development in .env.
+#   3. docker compose up --build
+#
+# Service URLs (host-accessible):
+#   Teams Bot      : http://localhost:3978
+#   Main Agent     : http://localhost:8000
+#   Orchestrator   : http://localhost:8001
+#   Retrieval      : http://localhost:8002
+#
+# Notes:
+#   - MAIN_AGENT_URL / ORCHESTRATOR_URL / RETRIEVAL_URL are overridden here
+#     to use Docker service-to-service DNS so inter-agent calls stay on the
+#     internal Docker network.
+#   - Teams Bot reaches the internet via ngrok for Bot Framework callbacks;
+#     this compose does not start ngrok automatically.
+
+version: "3.9"
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 30s
+
+x-common-build: &common-build
+  context: .
+  dockerfile: Dockerfile
+
+services:
+
+  # ── Retrieval Agent (no upstream deps within this stack) ──────────────────
+  retrieval-agent:
+    build:
+      <<: *common-build
+      args:
+        SERVICE_MODULE: "agents.retrieval_agent:app"
+        SERVICE_PORT: "8002"
+    ports:
+      - "8002:8002"
+    env_file: .env
+    environment:
+      SERVICE_PORT: "8002"
+    healthcheck:
+      <<: *healthcheck-defaults
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8002/health/live', timeout=5)"
+    restart: on-failure
+
+  # ── Orchestrator Agent ────────────────────────────────────────────────────
+  orchestrator-agent:
+    build:
+      <<: *common-build
+      args:
+        SERVICE_MODULE: "agents.orchestrator_agent:app"
+        SERVICE_PORT: "8001"
+    ports:
+      - "8001:8001"
+    env_file: .env
+    environment:
+      SERVICE_PORT: "8001"
+      # Override so the orchestrator reaches retrieval via Docker DNS
+      RETRIEVAL_URL: "http://retrieval-agent:8002"
+    depends_on:
+      retrieval-agent:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck-defaults
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8001/health/live', timeout=5)"
+    restart: on-failure
+
+  # ── Main Agent ────────────────────────────────────────────────────────────
+  main-agent:
+    build:
+      <<: *common-build
+      args:
+        SERVICE_MODULE: "agents.main_agent:app"
+        SERVICE_PORT: "8000"
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      SERVICE_PORT: "8000"
+      ORCHESTRATOR_URL: "http://orchestrator-agent:8001"
+    depends_on:
+      orchestrator-agent:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck-defaults
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live', timeout=5)"
+    restart: on-failure
+
+  # ── Teams Bot ─────────────────────────────────────────────────────────────
+  teams-bot:
+    build:
+      <<: *common-build
+      args:
+        SERVICE_MODULE: "teams_bot:app"
+        SERVICE_PORT: "3978"
+    ports:
+      - "3978:3978"
+    env_file: .env
+    environment:
+      SERVICE_PORT: "3978"
+      MAIN_AGENT_URL: "http://main-agent:8000"
+    depends_on:
+      main-agent:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck-defaults
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:3978/health/live', timeout=5)"
+    restart: on-failure

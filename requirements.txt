@@ -1,0 +1,49 @@
+# ── Core web framework ─────────────────────────────────────────────────────────
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+starlette==0.41.3
+pydantic==2.10.3
+pydantic-settings==2.6.1
+python-multipart==0.0.12
+
+# ── Async HTTP client ──────────────────────────────────────────────────────────
+httpx==0.28.1
+
+# ── Microsoft Bot Framework ────────────────────────────────────────────────────
+botbuilder-core==4.16.1
+botbuilder-integration-aiohttp==4.16.1
+botbuilder-schema==4.16.1
+
+# ── Azure AI / OpenAI ──────────────────────────────────────────────────────────
+openai==1.57.2
+azure-ai-projects==1.0.0b4
+
+# ── Azure Search ───────────────────────────────────────────────────────────────
+azure-search-documents==11.6.0b9
+
+# ── Azure Cosmos DB ────────────────────────────────────────────────────────────
+azure-cosmos==4.9.0
+
+# ── Azure Service Bus (escalation) ────────────────────────────────────────────
+azure-servicebus==7.12.3
+
+# ── Azure Identity (managed identity + DefaultAzureCredential) ─────────────────
+azure-identity==1.19.0
+
+# ── Observability (optional — required if APPLICATIONINSIGHTS_CONNECTION_STRING is set)
+azure-monitor-opentelemetry==1.6.4
+opentelemetry-sdk==1.29.0
+
+# ── Resilience ─────────────────────────────────────────────────────────────────
+tenacity==9.0.0
+
+# ── Redis (distributed rate limiting — required when REDIS_URL is set) ─────────
+redis==5.2.1
+
+# ── Utilities ──────────────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+
+# ── Test dependencies ──────────────────────────────────────────────────────────
+pytest==8.3.4
+pytest-asyncio==0.24.0
+httpx==0.28.1   # also used as test client for FastAPI endpoints
