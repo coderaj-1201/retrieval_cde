@@ -2,7 +2,13 @@
 from __future__ import annotations
 
 import pytest
-from card_mapper import build_answer_card, build_feedback_card, normalize_sources, _safe_url
+from card_mapper import (
+    build_answer_card,
+    build_escalation_card,
+    build_feedback_card,
+    normalize_sources,
+    _safe_url,
+)
 
 
 # ── _safe_url ──────────────────────────────────────────────────────────────────
@@ -108,6 +114,44 @@ def test_build_answer_card_url_in_link():
 
 
 # ── build_feedback_card ────────────────────────────────────────────────────────
+
+# ── build_escalation_card ────────────────────────────────────────────────────
+
+def _escalation_data(**overrides):
+    data = {
+        "answer": "I wasn't able to find a confident answer.",
+        "question_id": "q-1", "answer_id": "ans-1",
+        "conversation_id": "c-1", "user_id": "u-1", "domain": "hr",
+        "escalation_options": {
+            "raise_ticket": {"sla": "4 business hours"},
+            "connect_sme":  {"sla": "2 business hours"},
+        },
+    }
+    data.update(overrides)
+    return data
+
+
+def test_build_escalation_card_has_both_buttons():
+    card = build_escalation_card(_escalation_data(), question_text="What is my leave balance?")
+    actions = card["content"]["actions"]
+    types_data = [a["data"]["escalation_type"] for a in actions]
+    assert "raise_ticket" in types_data
+    assert "connect_sme" in types_data
+
+
+def test_build_escalation_card_button_carries_context():
+    card = build_escalation_card(_escalation_data(), question_text="What is my leave balance?")
+    ticket_action = next(a for a in card["content"]["actions"] if a["data"]["escalation_type"] == "raise_ticket")
+    assert ticket_action["data"]["action"] == "escalate"
+    assert ticket_action["data"]["question_id"] == "q-1"
+    assert ticket_action["data"]["domain"] == "hr"
+    assert ticket_action["data"]["question_text"] == "What is my leave balance?"
+
+
+def test_build_escalation_card_no_actions_without_options():
+    card = build_escalation_card(_escalation_data(escalation_options={}))
+    assert card["content"]["actions"] == []
+
 
 def test_build_feedback_card_structure():
     data = {

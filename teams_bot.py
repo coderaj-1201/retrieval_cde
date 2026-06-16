@@ -31,7 +31,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from card_mapper import build_answer_card, build_feedback_card
+from card_mapper import build_answer_card, build_escalation_card, build_feedback_card
 
 load_dotenv()
 
@@ -239,14 +239,20 @@ class IronmanBot(ActivityHandler):
             )
 
         elif msg_status == "failure":
-            opts   = data.get("escalation_options", {})
-            answer = data.get("answer", "").strip()
-            lines  = [answer] if answer else ["I wasn't able to find a confident answer."]
+            opts = data.get("escalation_options", {})
+            if not data.get("answer", "").strip():
+                data = {**data, "answer": "I wasn't able to find a confident answer."}
             if opts:
-                lines.append("\nYou can escalate:")
-                for key, opt in opts.items():
-                    lines.append(f"  • Reply `{key}` — {opt.get('sla', '')}")
-            await turn_context.send_activity("\n".join(lines))
+                escalation_card = build_escalation_card(data, question_text=user_text)
+                await turn_context.send_activity(Activity(
+                    type=ActivityTypes.message,
+                    attachments=[Attachment(
+                        content_type=escalation_card["contentType"],
+                        content=escalation_card["content"],
+                    )],
+                ))
+            else:
+                await turn_context.send_activity(data["answer"])
 
         else:
             answer = data.get("answer", "").strip()
@@ -323,13 +329,16 @@ class IronmanBot(ActivityHandler):
     async def _handle_escalate(self, turn_context: TurnContext, value: dict) -> None:
         escalation_type = value.get("escalation_type", "raise_ticket")
         from_prop       = turn_context.activity.from_property
-        user_id         = from_prop.id if from_prop else "anonymous"
-        conv_id         = turn_context.activity.conversation.id
+        user_id         = value.get("user_id") or (from_prop.id if from_prop else "anonymous")
+        conv_id         = value.get("conversation_id") or turn_context.activity.conversation.id
         try:
             data = await call_main_agent({
                 "text":            escalation_type,
                 "conversation_id": conv_id,
                 "user_id":         user_id,
+                "question_id":     value.get("question_id"),
+                "domain":          value.get("domain") or "",
+                "original_question": _sanitise_user_text(value.get("question_text", "")),
             })
             await turn_context.send_activity(
                 data.get("answer", "Escalation request received.")

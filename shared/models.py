@@ -49,6 +49,10 @@ class UserQuery:
     conversation_id: str
     user_id:         str
     question_id:     str = field(default_factory=lambda: f"q-{uuid4().hex[:12]}")
+    # Populated only for manual escalation button clicks (text == "raise_ticket"/
+    # "connect_sme") — carries the original question's domain/text for the ticket.
+    domain:             str = ""
+    original_question:  str = ""
 
 
 @dataclass

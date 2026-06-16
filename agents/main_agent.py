@@ -120,6 +120,12 @@ class QueryBody(BaseModel):
     conversation_id: str | None = None
     user_id: str                = "anonymous"
     idempotency_key: str | None = None
+    # Only sent by the Teams bot when the user clicks an escalation card button
+    # (text == "raise_ticket"/"connect_sme"). Carries the original question's
+    # context so the Zendesk ticket isn't blank.
+    question_id:        str | None = None
+    domain:              str | None = None
+    original_question:   str | None = None
 
     @field_validator("text")
     @classmethod
@@ -329,16 +335,16 @@ async def main_agent_workflow(user_query: UserQuery) -> QueryResponse:
             user_id=user_query.user_id,
             conversation_id=user_query.conversation_id,
             question_id=user_query.question_id,
-            question_text=user_query.text,
-            domain="",
+            question_text=user_query.original_question or user_query.text,
+            domain=user_query.domain,
         )
     if text_lower == "connect_sme":
         return await handle_connect_sme(
             user_id=user_query.user_id,
             conversation_id=user_query.conversation_id,
             question_id=user_query.question_id,
-            question_text=user_query.text,
-            domain="",
+            question_text=user_query.original_question or user_query.text,
+            domain=user_query.domain,
         )
 
     session = await load_session(user_query.conversation_id, user_query.user_id)
@@ -626,7 +632,9 @@ async def query(body: QueryBody) -> Response:
         text=body.text,
         conversation_id=conversation_id,
         user_id=body.user_id,
-        question_id=body.idempotency_key or f"q-{uuid.uuid4().hex[:12]}",
+        question_id=body.question_id or body.idempotency_key or f"q-{uuid.uuid4().hex[:12]}",
+        domain=body.domain or "",
+        original_question=body.original_question or "",
     )
     bind_context(
         agent="main",

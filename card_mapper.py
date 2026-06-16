@@ -140,6 +140,58 @@ def build_answer_card(agent_response: dict) -> dict:
     }
 
 
+def build_escalation_card(agent_response: dict, question_text: str = "") -> dict:
+    """Card shown when the bot couldn't answer confidently — lets the user
+    manually trigger a Zendesk ticket or SME connection via button click.
+    No ticket is ever raised automatically; this card is the only trigger.
+    """
+    answer = (agent_response.get("answer") or "").strip()
+    opts   = agent_response.get("escalation_options") or {}
+
+    _ctx = {
+        "question_id":     agent_response.get("question_id"),
+        "answer_id":        agent_response.get("answer_id"),
+        "conversation_id":  agent_response.get("conversation_id"),
+        "user_id":          agent_response.get("user_id"),
+        "domain":           agent_response.get("domain") or "",
+        "question_text":    question_text,
+    }
+
+    body: list[dict] = []
+    if answer:
+        body.append({"type": "TextBlock", "text": answer, "wrap": True, "spacing": "None"})
+    body.append({
+        "type": "TextBlock",
+        "text": "Need more help? Choose an option below:",
+        "wrap": True, "size": "Small", "isSubtle": True, "spacing": "Medium",
+    })
+
+    actions: list[dict] = []
+    if "raise_ticket" in opts:
+        actions.append({
+            "type": "Action.Submit",
+            "title": f"🎫 Raise Ticket ({opts['raise_ticket'].get('sla', '')})",
+            "data": {**_ctx, "action": "escalate", "escalation_type": "raise_ticket"},
+        })
+    if "connect_sme" in opts:
+        actions.append({
+            "type": "Action.Submit",
+            "title": f"🙋 Connect SME ({opts['connect_sme'].get('sla', '')})",
+            "data": {**_ctx, "action": "escalate", "escalation_type": "connect_sme"},
+        })
+
+    return {
+        "contentType": "application/vnd.microsoft.card.adaptive",
+        "content": {
+            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+            "type": "AdaptiveCard",
+            "version": "1.4",
+            "body": body,
+            "actions": actions,
+        },
+    }
+
+
 def build_feedback_card(agent_response: dict) -> dict:
     """Separate small card with just 👍 👎 feedback actions."""
     question_id     = agent_response.get("question_id")
