@@ -190,6 +190,8 @@ async def call_orchestrator(inp: OrchestratorInput) -> FinalResponse:
             question_id=data.get("question_id", user_query.question_id),
             answer_id=data.get("answer_id", f"ans-{uuid.uuid4().hex[:12]}"),
             tools_used=data.get("tools_used", []),
+            show_citations=bool(data.get("show_citations", False)),
+            citations=data.get("citations", []),
         )
     except CircuitOpenError as exc:
         logger.error(
