@@ -46,27 +46,14 @@ logger = get_logger(__name__)
 _SYNTHESIS_SYSTEM = """
 You are IRONMAN AI Assistant, a knowledgeable enterprise assistant for the IRONMAN organization. You answer questions based strictly on the retrieved documents provided to you.
 
-────────────────────────────────────────────
-STEP 1 — CLASSIFY THE MESSAGE
-────────────────────────────────────────────
-Before answering, classify the user's message into one of:
-  A) GREETING / SMALL TALK  — e.g. "hi", "hello", "how are you", "what's your name", "thanks", "bye"
-  B) GENERAL QUESTION       — e.g. "what can you do?", "who are you?"
-  C) KNOWLEDGE QUESTION     — a question that requires retrieving policy, procedure, or factual info
+By the time you receive a question here, it has already been classified as a
+real in-domain enterprise question (greetings and out-of-scope topics are
+handled before reaching you) — always treat the input as a knowledge question
+requiring document-grounded answers.
 
 ────────────────────────────────────────────
-STEP 2 — RESPOND BASED ON CLASSIFICATION
+ANSWERING THE QUESTION
 ────────────────────────────────────────────
-
-### CLASS A or B (Greeting / General)
-Reply warmly and briefly. Do NOT mention documents, sources, or citations.
-Set confidence = 1.0, escalation_recommended = false, show_citations = false.
-
-Example:
-User: "Hi!"
-Answer: "Hello! I'm IRONMAN AI Assistant. Ask me anything about HR policies, SOPs, legal guidelines, or operational procedures."
-
-### CLASS C (Knowledge Question)
 Answer using ONLY the retrieved documents. Follow the formatting rules below.
 Evaluate your confidence honestly based on how well the documents answer the question.
 
@@ -117,7 +104,6 @@ STRICT RULES
 OUTPUT FORMAT — always return valid JSON, nothing else
 ────────────────────────────────────────────
 {
-  "message_type": "greeting|general|knowledge",
   "answer": "<your formatted answer here — plain text with markdown>",
   "confidence": <float 0.0-1.0>,
   "escalation_recommended": <true|false>,
@@ -277,14 +263,15 @@ async def synthesize_answer(inp: SynthesisInput) -> tuple[str, float, list[Sourc
         answer        = str(parsed.get("answer", "")).strip()
         confidence    = float(parsed.get("confidence", 0.5))
         confidence    = round(min(max(confidence, 0.0), 1.0), 3)
-        message_type  = str(parsed.get("message_type", "knowledge")).strip().lower()
         llm_citations: list[dict] = parsed.get("citations") or []
-        # Derive show_citations in code rather than trusting the model's own
-        # flag — the model sometimes returns confidence>=threshold with
-        # show_citations=false despite the prompt's rule, so the two fields
-        # can drift apart. Recomputing from message_type + confidence keeps
-        # them consistent regardless of what the model echoed back.
-        show_citations = message_type == "knowledge" and confidence >= settings.CONFIDENCE_THRESHOLD
+        # show_citations is gated purely on confidence — by the time a query
+        # reaches synthesize_answer, the orchestrator has already classified
+        # it as a real in-domain question (greetings/out-of-scope never get
+        # here), so a second "message_type" re-classification inside this
+        # prompt is redundant and was occasionally mislabeling legitimate
+        # knowledge questions as "general", incorrectly suppressing citations
+        # on otherwise-successful answers.
+        show_citations = confidence >= settings.CONFIDENCE_THRESHOLD
         if show_citations:
             # Drop individual weak citations even when the overall answer is
             # confident enough to show citations at all.

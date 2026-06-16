@@ -82,14 +82,14 @@ Return ONLY JSON:
   "domain_confidence": <0.0-1.0>,
   "secondary_domain": "{domain_values}|none",
   "tool": "hybrid|hyde|decomposition",
-  "response_type": "clarify|decline",
+  "response_type": "greeting|general|clarify|decline",
   "deflection_message": "<only when domain=none, see rules below>",
   "reason": "brief"
 }}
 
 domain:
 {domain_lines}
-none=question is not related to any enterprise domain (general knowledge, personal, celebrity, sports, etc.)
+none=question is not related to any enterprise domain (general knowledge, personal, celebrity, sports, etc.) — this INCLUDES greetings and small talk, which are never a domain
 
 domain_confidence:
 0.9+=certain
@@ -103,28 +103,40 @@ hybrid=direct factual questions
 hyde=vague/conceptual questions
 decomposition=complex multi-part questions
 
-If the question is not enterprise-related, set domain="none", domain_confidence=1.0, and:
+If the question is not enterprise-related, set domain="none", domain_confidence=1.0, and
+decide response_type:
 
-1. Decide response_type:
-   - "clarify" — the question is short, ambiguous, or relies on pronouns/context
-     ("it", "that", "this one", "what about...") in a way that suggests it's a
-     follow-up to the previous turn in the memory context, rather than a genuinely
-     unrelated topic.
-   - "decline" — the question is clearly unrelated to enterprise topics on its own
-     terms (celebrity trivia, sports scores, general knowledge, personal questions),
-     regardless of memory context.
+- "greeting" — small talk: "hi", "hello", "how are you", "thanks", "bye", etc.
+- "general" — questions about the assistant itself: "what can you do?", "who are you?",
+  "help"
+- "clarify" — the question is short, ambiguous, or relies on pronouns/context
+  ("it", "that", "this one", "what about...") in a way that suggests it's a
+  follow-up to the previous turn in the memory context, rather than a genuinely
+  unrelated topic.
+- "decline" — the question is clearly unrelated to enterprise topics on its own
+  terms (celebrity trivia, sports scores, general knowledge, personal questions),
+  regardless of memory context.
 
-2. Write deflection_message as a short, warm, NON-REPETITIVE message in your own
-   words each time — never reuse the same exact wording across different
-   questions:
-   - If response_type="clarify": reference the likely prior topic from the memory
-     context and ask the user to confirm or rephrase, e.g. "Did you mean to follow
-     up on <prior topic>? Could you rephrase that in context?"
-   - If response_type="decline": briefly and politely note that the specific topic
-     they asked about (name it) isn't something you can help with, then redirect
-     them toward enterprise topics (HR, IT, Legal, Ops) you can help with instead.
-   - Keep it to 1-3 sentences. Do not use a generic template — tailor the wording
-     to the actual question each time.
+Write deflection_message as a short, NON-REPETITIVE message in your own words
+each time — never reuse the same exact wording across different questions or
+session — tone depends on response_type:
+
+- "greeting": warm and welcoming, never apologetic or about "scope" — just greet
+  back naturally and briefly mention you can help with HR, IT, Legal, or Ops
+  topics. Do NOT say anything is "out of scope" or that you "can't help" — there
+  was nothing to decline.
+- "general": friendly, briefly explain what you can help with (HR, IT, Legal,
+  Ops topics) in your own words each time.
+- "clarify": professional, reference the likely prior topic from the memory
+  context and ask the user to confirm or rephrase, e.g. "Did you mean to follow
+  up on <prior topic>? Could you rephrase that in context?"
+- "decline": professional and polite, note that the specific topic they asked
+  about (name it) isn't something you can help with, then redirect them toward
+  enterprise topics (HR, IT, Legal, Ops) you can help with instead. Do not be
+  preachy or repeat the same phrasing as previous declines.
+
+Keep deflection_message to 1-3 sentences in all cases. Never use a fixed
+template — tailor the wording to the actual question each time.
 """
 
 
@@ -184,7 +196,7 @@ async def classify_query(inp: ClassifyInput) -> ClassifyResult:
                 {"role": "user",   "content": user_content},
             ],
             temperature=0,
-            max_tokens=150,
+            max_tokens=300,
             response_format={"type": "json_object"},
         )
 
@@ -209,13 +221,13 @@ async def classify_query(inp: ClassifyInput) -> ClassifyResult:
             # Fallback only if the model omitted it — still avoid a single
             # fixed string by varying on response_type.
             response_type = (raw.get("response_type") or "decline").lower()
-            deflection_message = (
-                "Could you clarify what you'd like to follow up on? "
-                "I can help with HR, IT, Legal, or Ops topics."
-                if response_type == "clarify" else
-                "That's outside what I can help with — I'm focused on enterprise "
-                "topics like HR, IT, Legal, and Ops. Anything in those areas I can help with?"
-            )
+            _FALLBACKS = {
+                "greeting": "Hi there! I'm IRONMAN AI Assistant — happy to help with HR, IT, Legal, or Ops questions.",
+                "general":  "I can help answer questions about HR, IT, Legal, and Operations topics — what would you like to know?",
+                "clarify":  "Could you clarify what you'd like to follow up on? I can help with HR, IT, Legal, or Ops topics.",
+                "decline":  "That's outside what I can help with — I'm focused on enterprise topics like HR, IT, Legal, and Ops. Anything in those areas I can help with?",
+            }
+            deflection_message = _FALLBACKS.get(response_type, _FALLBACKS["decline"])
         logger.info(
             "classify_out_of_scope query_preview=%.60s domain_raw='%s' response_type=%s",
             inp.query, domain_raw, raw.get("response_type"),
