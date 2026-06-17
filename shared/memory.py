@@ -124,7 +124,7 @@ _PRONOUN_RE = re.compile(
 # Max chars of answer shown per turn in the context block.
 _SESSION_CONTEXT_ANSWER_CHARS = 150
 # Number of recent turns to include when context IS needed.
-_SESSION_CONTEXT_TURNS = 3
+_SESSION_CONTEXT_TURNS = 5
 
 
 def needs_session_context(query: str) -> bool:
