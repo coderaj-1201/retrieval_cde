@@ -5,6 +5,7 @@ import pytest
 from card_mapper import (
     build_answer_card,
     build_escalation_card,
+    build_escalation_confirmation_card,
     build_feedback_card,
     normalize_sources,
     _safe_url,
@@ -151,6 +152,41 @@ def test_build_escalation_card_button_carries_context():
 def test_build_escalation_card_no_actions_without_options():
     card = build_escalation_card(_escalation_data(escalation_options={}))
     assert card["content"]["actions"] == []
+
+
+# ── build_escalation_confirmation_card ──────────────────────────────────────
+
+def test_confirmation_card_ticket_raised():
+    data = {
+        "status": "ticket_raised", "correlation_id": "REF-ABC123",
+        "domain": "hr", "answer": "Ticket raised.",
+    }
+    card = build_escalation_confirmation_card(data)
+    assert card["contentType"] == "application/vnd.microsoft.card.adaptive"
+    # title and reference appear in body
+    all_text = str(card["content"]["body"])
+    assert "Support Ticket Raised" in all_text
+    assert "REF-ABC123" in all_text
+    assert "4 business hours" in all_text
+
+
+def test_confirmation_card_sme_connecting():
+    data = {
+        "status": "sme_connecting", "correlation_id": "REF-DEF456",
+        "domain": "it", "answer": "SME requested.",
+    }
+    card = build_escalation_confirmation_card(data)
+    all_text = str(card["content"]["body"])
+    assert "SME Connection Requested" in all_text
+    assert "REF-DEF456" in all_text
+    assert "2 business hours" in all_text
+
+
+def test_confirmation_card_no_correlation_id_falls_back_to_answer():
+    data = {"status": "ticket_raised", "correlation_id": "", "answer": "Contact support."}
+    card = build_escalation_confirmation_card(data)
+    all_text = str(card["content"]["body"])
+    assert "Contact support." in all_text
 
 
 def test_build_feedback_card_structure():

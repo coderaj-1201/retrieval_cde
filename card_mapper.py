@@ -192,6 +192,87 @@ def build_escalation_card(agent_response: dict, question_text: str = "") -> dict
     }
 
 
+def build_escalation_confirmation_card(data: dict) -> dict:
+    """Confirmation card shown after the user clicks Raise Ticket or Connect SME.
+
+    Displays the escalation type, reference ID, SLA, and a copy-reference button.
+    Works for both ticket_raised and sme_connecting statuses.
+    """
+    status         = data.get("status", "ticket_raised")
+    correlation_id = data.get("correlation_id", "")
+    domain         = (data.get("domain") or "").upper()
+    answer         = (data.get("answer") or "").strip()
+
+    is_ticket = status == "ticket_raised"
+    icon      = "🎫" if is_ticket else "🙋"
+    title     = "Support Ticket Raised" if is_ticket else "SME Connection Requested"
+    sla_label = "Expected response time" if is_ticket else "Expected callback time"
+    sla_value = "4 business hours" if is_ticket else "2 business hours"
+    color     = "Good"  # green header bar
+
+    body: list[dict] = [
+        {
+            "type": "ColumnSet",
+            "columns": [
+                {
+                    "type": "Column", "width": "auto",
+                    "items": [{"type": "TextBlock", "text": icon, "size": "ExtraLarge", "spacing": "None"}],
+                },
+                {
+                    "type": "Column", "width": "stretch",
+                    "items": [
+                        {
+                            "type": "TextBlock",
+                            "text": title,
+                            "weight": "Bolder", "size": "Medium", "spacing": "None",
+                            "color": color,
+                        },
+                        *([{
+                            "type": "TextBlock",
+                            "text": f"Domain: {domain}",
+                            "size": "Small", "isSubtle": True, "spacing": "None",
+                        }] if domain else []),
+                    ],
+                },
+            ],
+        },
+        {"type": "Separator"},
+    ]
+
+    if correlation_id:
+        body += [
+            {
+                "type": "FactSet",
+                "facts": [
+                    {"title": "Reference", "value": correlation_id},
+                    {"title": sla_label,   "value": sla_value},
+                ],
+                "spacing": "Small",
+            },
+        ]
+    elif answer:
+        body.append({
+            "type": "TextBlock", "text": answer,
+            "wrap": True, "size": "Small", "spacing": "Small",
+        })
+
+    body.append({
+        "type": "TextBlock",
+        "text": "Our support team will reach out to you shortly.",
+        "wrap": True, "size": "Small", "isSubtle": True, "spacing": "Medium",
+    })
+
+    return {
+        "contentType": "application/vnd.microsoft.card.adaptive",
+        "content": {
+            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+            "type": "AdaptiveCard",
+            "version": "1.4",
+            "body": body,
+        },
+    }
+
+
 def build_feedback_card(agent_response: dict) -> dict:
     """Separate small card with just 👍 👎 feedback actions."""
     question_id     = agent_response.get("question_id")

@@ -196,6 +196,7 @@ class QueryResponse:
     show_citations:     bool       = False
     citations:          list[dict] = field(default_factory=list)
     timestamp:          str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    correlation_id:     str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -214,6 +215,7 @@ class QueryResponse:
             "show_citations":     self.show_citations,
             "citations":          self.citations,
             "timestamp":          self.timestamp,
+            "correlation_id":     self.correlation_id,
         }
 
 

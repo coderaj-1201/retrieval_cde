@@ -264,6 +264,7 @@ async def handle_raise_ticket(
         tools_used=[],
         sources=[],
         escalation_options=None,
+        correlation_id=correlation_id,
     )
 
 
@@ -323,6 +324,7 @@ async def handle_connect_sme(
         tools_used=[],
         sources=[],
         escalation_options=None,
+        correlation_id=correlation_id,
     )
 
 

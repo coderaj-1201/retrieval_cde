@@ -31,7 +31,12 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from card_mapper import build_answer_card, build_escalation_card, build_feedback_card
+from card_mapper import (
+    build_answer_card,
+    build_escalation_card,
+    build_escalation_confirmation_card,
+    build_feedback_card,
+)
 
 load_dotenv()
 
@@ -333,16 +338,21 @@ class IronmanBot(ActivityHandler):
         conv_id         = value.get("conversation_id") or turn_context.activity.conversation.id
         try:
             data = await call_main_agent({
-                "text":            escalation_type,
-                "conversation_id": conv_id,
-                "user_id":         user_id,
-                "question_id":     value.get("question_id"),
-                "domain":          value.get("domain") or "",
+                "text":              escalation_type,
+                "conversation_id":   conv_id,
+                "user_id":           user_id,
+                "question_id":       value.get("question_id"),
+                "domain":            value.get("domain") or "",
                 "original_question": _sanitise_user_text(value.get("question_text", "")),
             })
-            await turn_context.send_activity(
-                data.get("answer", "Escalation request received.")
-            )
+            conf_card = build_escalation_confirmation_card(data)
+            await turn_context.send_activity(Activity(
+                type=ActivityTypes.message,
+                attachments=[Attachment(
+                    content_type=conf_card["contentType"],
+                    content=conf_card["content"],
+                )],
+            ))
         except Exception as exc:
             logger.error("escalate_failed: %s", exc, exc_info=True)
             await turn_context.send_activity(
