@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import hashlib
 import uuid
 import re
 from contextlib import asynccontextmanager
@@ -150,9 +151,23 @@ def remove_bot_mention(turn_context: TurnContext, text: str) -> str:
     return text.strip()
 
 
+# Common profanity patterns — replace with asterisks before storage.
+# This is a lightweight policy-safe filter; extend the list as needed.
+_PROFANITY_RE = re.compile(
+    r"\b(fuck|shit|ass(?:hole)?|bitch|bastard|cunt|dick|piss|crap|damn|hell)\b",
+    re.IGNORECASE,
+)
+
+
+def _redact_profanity(text: str) -> str:
+    """Replace matched profanity words with asterisks of the same length."""
+    return _PROFANITY_RE.sub(lambda m: "*" * len(m.group()), text)
+
+
 def _sanitise_user_text(text: str) -> str:
-    """Strip control characters and enforce length cap."""
+    """Strip control characters, redact profanity, enforce length cap."""
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text).strip()
+    text = _redact_profanity(text)
     if len(text) > _MAX_USER_TEXT:
         logger.warning(
             "teams_message_truncated original_len=%d max_len=%d",
@@ -200,11 +215,18 @@ class IronmanBot(ActivityHandler):
             user_id, tenant_id, conversation_id, user_text,
         )
 
+        # Stable idempotency key: same user + same conversation + same text
+        # always maps to the same key, so repeated sends return the cached answer.
+        idempotency_key = "q-" + hashlib.sha256(
+            f"{user_id}:{conversation_id}:{user_text}".encode()
+        ).hexdigest()[:24]
+
         try:
             data = await call_main_agent({
-                "text":            user_text,
-                "conversation_id": conversation_id,
-                "user_id":         user_id,
+                "text":             user_text,
+                "conversation_id":  conversation_id,
+                "user_id":          user_id,
+                "idempotency_key":  idempotency_key,
             })
         except Exception as exc:
             logger.error("main_agent_call_failed: %s", exc, exc_info=True)
@@ -334,6 +356,17 @@ class IronmanBot(ActivityHandler):
             await turn_context.send_activity(
                 data.get("answer", "Escalation request received.")
             )
+            # Show a lightweight feedback card so users can still rate the
+            # escalation outcome even though no answer card was produced.
+            if data.get("answer_id"):
+                fb_card = build_feedback_card(data)
+                await turn_context.send_activity(Activity(
+                    type=ActivityTypes.message,
+                    attachments=[Attachment(
+                        content_type=fb_card["contentType"],
+                        content=fb_card["content"],
+                    )],
+                ))
         except Exception as exc:
             logger.error("escalate_failed: %s", exc, exc_info=True)
             await turn_context.send_activity(

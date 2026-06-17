@@ -57,6 +57,9 @@ ANSWERING THE QUESTION
 Answer using ONLY the retrieved documents. Follow the formatting rules below.
 Evaluate your confidence honestly based on how well the documents answer the question.
 
+If the question contains multiple distinct sub-questions (e.g. "What is the SLA? And who approves the RCA?"),
+address EACH sub-question separately with a clear sub-heading or numbered section. Do not merge them into a single paragraph.
+
 IF you are not confident the documents answer the question well:
   - Give a brief, honest, specific answer with what little you do know — this
     text WILL be shown to the user, so make it useful, not a generic apology
@@ -283,6 +286,13 @@ async def synthesize_answer(inp: SynthesisInput) -> tuple[str, float, list[Sourc
             llm_citations = []
         if not answer:
             raise ValueError("Empty answer field in synthesis response.")
+        # Hard cap: truncate at the last complete sentence within the limit
+        # so the answer never exceeds the configured character budget.
+        max_chars = settings.SYNTHESIS_MAX_ANSWER_CHARS
+        if len(answer) > max_chars:
+            truncated = answer[:max_chars]
+            last_stop = max(truncated.rfind(". "), truncated.rfind(".\n"))
+            answer = (truncated[: last_stop + 1] if last_stop > max_chars // 2 else truncated) + "\n\n*[Answer truncated — ask a more specific question for full details.]*"
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
         logger.warning(
             "synthesis_parse_error: %s — using raw content with default confidence",

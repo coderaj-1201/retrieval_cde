@@ -110,6 +110,9 @@ class Settings(BaseSettings):
     # Max source citations returned to the caller (additional sources still
     # contribute to the synthesis context, only the citation list is capped).
     SYNTHESIS_MAX_SOURCES: int   = Field(default=5,    ge=1,   le=10)
+    # Hard cap on the final answer text length (chars) sent to the user.
+    # ~3000 chars ≈ ~500 words — readable in Teams without excessive scrolling.
+    SYNTHESIS_MAX_ANSWER_CHARS: int = Field(default=3000, ge=500, le=8000)
 
     # ── Memory ─────────────────────────────────────────────────────────────────
     SESSION_MAX_TURNS: int       = Field(default=10,     ge=1,   le=50)
@@ -127,6 +130,11 @@ class Settings(BaseSettings):
 
     # ── Domain classification ──────────────────────────────────────────────────
     DOMAIN_CONFIDENCE_THRESHOLD: float = Field(default=0.6, ge=0.0, le=1.0)
+
+    # ── Escalation SLAs ────────────────────────────────────────────────────────
+    # Override these in .env when SLA commitments change — no code edits needed.
+    ESCALATION_SLA_TICKET: str = "4 business hours"
+    ESCALATION_SLA_SME:    str = "2 business hours"
 
     # ── Observability ──────────────────────────────────────────────────────────
     APPLICATIONINSIGHTS_CONNECTION_STRING: str | None = None

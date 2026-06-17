@@ -75,13 +75,13 @@ _ESCALATION_OPTIONS = {
         "action":      "raise_ticket",
         "description": "Raise a support ticket",
         "reply_with":  "raise_ticket",
-        "sla":         "4 business hours",
+        "sla":         settings.ESCALATION_SLA_TICKET,
     },
     "connect_sme": {
         "action":      "connect_sme",
         "description": "Connect with a Subject Matter Expert",
         "reply_with":  "connect_sme",
-        "sla":         "2 business hours",
+        "sla":         settings.ESCALATION_SLA_SME,
     },
 }
 
@@ -209,15 +209,48 @@ async def handle_raise_ticket(
     question_text: str,
     domain: str,
 ) -> QueryResponse:
+    # Idempotency: one ticket per (user, conversation). If a ticket was already
+    # raised for this conversation, return the existing reference instead of
+    # creating a duplicate.
+    ticket_idem_id = f"ticket-{user_id}-{conversation_id}"
+    existing = await asyncio.to_thread(
+        get_document, get_chat_container(), ticket_idem_id, conversation_id
+    )
+    if existing:
+        existing_ref = existing.get("correlation_id", ticket_idem_id)
+        logger.info("ticket_duplicate_suppressed ref=%s user_id=%s", existing_ref, user_id)
+        return QueryResponse(
+            question_id=question_id,
+            answer_id=f"ans-{uuid.uuid4().hex[:12]}",
+            conversation_id=conversation_id,
+            user_id=user_id,
+            status="ticket_raised",
+            answer=(
+                f"A ticket was already raised for this conversation. "
+                f"Reference: `{existing_ref}`. No duplicate created."
+            ),
+            domain=domain,
+            confidence=1.0,
+            attempts_used=0,
+            tools_used=[],
+            sources=[],
+            escalation_options=None,
+        )
     if is_escalation_configured():
         try:
             correlation_id = await asyncio.to_thread(
                 sb_raise_ticket,
                 user_id, conversation_id, question_id, question_text, domain,
             )
+            # Persist idempotency record so duplicate clicks are suppressed.
+            await asyncio.to_thread(
+                upsert_document, get_chat_container(),
+                {"id": ticket_idem_id, "correlation_id": correlation_id,
+                 "conversation_id": conversation_id, "user_id": user_id},
+            )
             answer = (
                 f"Your ticket has been raised. Reference: `{correlation_id}`. "
-                "Expected response within **4 business hours**."
+                f"Expected response within **{settings.ESCALATION_SLA_TICKET}**."
             )
             record_escalation(escalation_type="raise_ticket", domain=domain or "unknown")
             logger.info(
@@ -277,7 +310,7 @@ async def handle_connect_sme(
             )
             answer = (
                 f"You're being connected with an SME. Reference: `{correlation_id}`. "
-                "Expected response within **2 business hours**."
+                f"Expected response within **{settings.ESCALATION_SLA_SME}**."
             )
             record_escalation(escalation_type="connect_sme", domain=domain or "unknown")
             logger.info(
@@ -399,8 +432,9 @@ async def main_agent_workflow(user_query: UserQuery) -> QueryResponse:
         citations=final.citations,
     )
 
-    # Persist to Cosmos — fire-and-forget (failure logged inside upsert_document)
-    upsert_document(get_chat_container(), ChatHistoryRecord(
+    # Persist to Cosmos synchronously before returning so feedback submitted
+    # immediately after the response always finds a valid answer record.
+    await asyncio.to_thread(upsert_document, get_chat_container(), ChatHistoryRecord(
         id=user_query.question_id,
         conversation_id=user_query.conversation_id,
         user_id=user_query.user_id,
@@ -678,7 +712,7 @@ async def feedback_post(body: FeedbackBody) -> Response:
         body.question_id, body.answer_id, body.rating,
     )
     record = FeedbackRecord(
-        id=f"fb-{uuid.uuid4().hex[:12]}",
+        id=f"fb-{body.answer_id}",   # fixed ID — Cosmos upsert overwrites on double-submit
         question_id=body.question_id,
         answer_id=body.answer_id,
         user_id=body.user_id,

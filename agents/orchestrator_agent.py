@@ -99,9 +99,9 @@ secondary_domain:
 best alternate domain if confidence is low, otherwise "none"
 
 tool:
-hybrid=direct factual questions
-hyde=vague/conceptual questions
-decomposition=complex multi-part questions
+hybrid=direct, single factual questions (default)
+hyde=vague, conceptual, or exploratory questions where a hypothetical document helps
+decomposition=MUST be selected when the message contains multiple distinct questions or sub-tasks — look for conjunctions like "and", "also", "as well as", numbered lists, bullet items, or multiple "?" marks (e.g. "What is the SLA? And who approves the RCA?" → decomposition)
 
 If the question is not enterprise-related, set domain="none", domain_confidence=1.0, and
 decide response_type:
