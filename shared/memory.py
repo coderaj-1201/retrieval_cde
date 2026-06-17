@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections import OrderedDict
 from datetime import datetime, timezone
 
@@ -109,14 +110,62 @@ async def append_turn(session: SessionMemory, turn: ConversationTurn) -> None:
     )
 
 
-def format_session_context(session: SessionMemory) -> str:
-    """Render recent turns as a compact string for prompt injection."""
+# Phrases that strongly suggest the user is continuing a prior thread.
+_FOLLOWUP_PHRASES = (
+    "what about", "and the", "tell me more", "more details", "what else",
+    "how about", "can you explain", "elaborate", "and what", "what if",
+    "same for", "related to", "similar to", "what is the difference",
+)
+# Bare pronouns that reference something from a prior turn.
+_PRONOUN_RE = re.compile(
+    r'\b(it|that|this|they|their|its|those|these|them|he|she|we|same)\b',
+    re.IGNORECASE,
+)
+# Max chars of answer shown per turn in the context block.
+_SESSION_CONTEXT_ANSWER_CHARS = 150
+# Number of recent turns to include when context IS needed.
+_SESSION_CONTEXT_TURNS = 3
+
+
+def needs_session_context(query: str) -> bool:
+    """
+    Returns True only when the query looks like a follow-up or continuation
+    of a prior turn. Standalone clear questions return False so the session
+    history is never injected unnecessarily.
+    """
+    q = query.strip().lower()
+    # Very short queries are almost always follow-ups or ambiguous.
+    if len(q) < 40:
+        return True
+    # Contains a known follow-up phrase.
+    if any(phrase in q for phrase in _FOLLOWUP_PHRASES):
+        return True
+    # Contains a bare pronoun that likely references a prior topic.
+    if _PRONOUN_RE.search(q):
+        return True
+    return False
+
+
+def format_session_context(session: SessionMemory, query: str = "") -> str:
+    """
+    Render recent turns as a compact string for prompt injection.
+
+    Context is only injected when the query signals it is a follow-up
+    (short query, pronoun, or known continuation phrase). Standalone
+    questions receive an empty string so the prompt stays clean.
+    """
     if not session.turns:
         return ""
-    lines = ["## Recent conversation history"]
-    for t in session.turns[-5:]:   # last 5 turns max in prompt
+    if query and not needs_session_context(query):
+        return ""
+    recent = session.turns[-_SESSION_CONTEXT_TURNS:]
+    lines = [f"## Recent conversation (last {len(recent)} turn(s))"]
+    for t in recent:
         lines.append(f"Q: {t.question}")
-        lines.append(f"A: {t.answer[:300]}{'...' if len(t.answer) > 300 else ''}")
+        answer_excerpt = t.answer[:_SESSION_CONTEXT_ANSWER_CHARS]
+        if len(t.answer) > _SESSION_CONTEXT_ANSWER_CHARS:
+            answer_excerpt += "…"
+        lines.append(f"A: {answer_excerpt}")
     return "\n".join(lines)
 
 

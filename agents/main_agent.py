@@ -347,7 +347,7 @@ async def main_agent_workflow(user_query: UserQuery) -> QueryResponse:
     try:
         final: FinalResponse = await call_orchestrator(OrchestratorInput(
             user_query=user_query,
-            session_context=format_session_context(session),
+            session_context=format_session_context(session, user_query.text),
             ltm_context=format_ltm_context(ltm),
         ))
     except Exception as exc:
