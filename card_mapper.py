@@ -84,14 +84,49 @@ def normalize_sources(sources: Any) -> list[dict]:
     return result
 
 
-def _confidence_badge(score: float) -> str:
-    """Return a short human-readable confidence label for a citation."""
+def _confidence_badge(score: float) -> tuple[str, str]:
+    """Return (emoji+pct, description) for a citation confidence score."""
     pct = int(round(score * 100))
     if pct >= 80:
-        return f"🟢 {pct}%"
+        return f"🟢 {pct}%", "High relevance"
     if pct >= 60:
-        return f"🟡 {pct}%"
-    return f"🔴 {pct}%"
+        return f"🟡 {pct}%", "Moderate relevance"
+    return f"🔴 {pct}%", "Low relevance"
+
+
+def _citation_row(link_text: str, score: float | None = None) -> dict:
+    """ColumnSet row: bullet + link on left, confidence badge right-aligned."""
+    left_col: dict = {
+        "type": "Column",
+        "width": "stretch",
+        "items": [{
+            "type": "TextBlock",
+            "text": f"• {link_text}",
+            "wrap": True, "size": "Small",
+        }],
+    }
+    if score is not None:
+        badge, label = _confidence_badge(score)
+        right_col: dict = {
+            "type": "Column",
+            "width": "auto",
+            "horizontalAlignment": "right",
+            "items": [{
+                "type": "TextBlock",
+                "text": f"{badge} *{label}*",
+                "wrap": False, "size": "Small", "isSubtle": True,
+                "horizontalAlignment": "right",
+            }],
+        }
+        columns = [left_col, right_col]
+    else:
+        columns = [left_col]
+
+    return {
+        "type": "ColumnSet",
+        "spacing": "Small",
+        "columns": columns,
+    }
 
 
 def build_answer_card(agent_response: dict) -> dict:
@@ -121,17 +156,12 @@ def build_answer_card(agent_response: dict) -> dict:
             "wrap": True, "size": "Small", "weight": "Bolder",
             "spacing": "Medium", "separator": True,
         })
-        for i, cite in enumerate(llm_citations[:5], start=1):
-            title = cite.get("title") or f"Source {i}"
+        for cite in llm_citations[:5]:
+            title = cite.get("title") or "Source"
             score = float(cite.get("confidence", 0.0))
-            badge = _confidence_badge(score)
             url   = url_map.get(title)
             link  = f"[{title}]({url})" if url else title
-            body.append({
-                "type": "TextBlock",
-                "text": f"{i}. {link} — {badge}",
-                "wrap": True, "size": "Small", "spacing": "Small",
-            })
+            body.append(_citation_row(link, score))
 
     elif show_citations and not llm_citations:
         # LLM said show citations but returned none — fall back to search sources
@@ -141,14 +171,11 @@ def build_answer_card(agent_response: dict) -> dict:
                 "wrap": True, "size": "Small", "weight": "Bolder",
                 "spacing": "Medium", "separator": True,
             })
-            for i, src in enumerate(sources[:5], start=1):
+            for src in sources[:5]:
                 title = src["title"]
                 url   = src.get("url")
-                line  = f"[{title}]({url})" if url else title
-                body.append({
-                    "type": "TextBlock", "text": f"{i}. {line}",
-                    "wrap": True, "size": "Small", "isSubtle": True, "spacing": "Small",
-                })
+                link  = f"[{title}]({url})" if url else title
+                body.append(_citation_row(link))
 
     # show_citations = False → no citation block at all (greeting / low confidence)
 
