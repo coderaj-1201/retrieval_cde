@@ -111,7 +111,13 @@ def hybrid_search(
     k      = top_k or settings.RETRIEVAL_TOP_K
     client = get_search_client()
 
-    odata_filter = f"domain eq '{domain}' and is_deleted eq false"
+    # Exclude deleted AND restricted documents.
+    # is_restricted=true means the document requires elevated access that the
+    # end-user chatbot cannot verify — those documents must never surface in
+    # chat responses. Access control at the SharePoint link destination handles
+    # the viewing permission; this filter prevents the content from leaking
+    # into the answer text at all.
+    odata_filter = f"domain eq '{domain}' and is_deleted eq false and (is_restricted eq false or is_restricted eq null)"
     if chunk_types:
         type_filter   = " or ".join(f"chunk_type eq '{t}'" for t in chunk_types)
         odata_filter += f" and ({type_filter})"
@@ -164,6 +170,10 @@ def fetch_parent_chunk(parent_id: str) -> SearchDocument | None:
     client = get_search_client()
     try:
         r = client.get_document(key=parent_id)
+        # Respect the is_restricted flag on parent chunks too.
+        if r.get("is_restricted") is True:
+            logger.warning("fetch_parent_chunk_blocked restricted parent_id=%s", parent_id)
+            return None
         return SearchDocument(
             id                 = r["id"],
             content            = r.get("content", ""),

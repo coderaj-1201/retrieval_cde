@@ -13,6 +13,7 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import re
 import uuid
@@ -133,12 +134,18 @@ class QueryBody(BaseModel):
 
 
 class FeedbackBody(BaseModel):
-    question_id: str
-    answer_id: str
-    conversation_id: str
-    user_id: str          = "anonymous"
+    question_id:     str = Field(min_length=1, max_length=128)
+    answer_id:       str = Field(min_length=1, max_length=128)
+    conversation_id: str = Field(min_length=1, max_length=256)
+    user_id:         str = Field(default="anonymous", max_length=256)
     rating: FeedbackRating
     comment: str          = Field(default="", max_length=2000)
+
+    @field_validator("comment")
+    @classmethod
+    def escape_html(cls, v: str) -> str:
+        """HTML-escape comment before storage to prevent XSS in dashboards."""
+        return html.escape(v, quote=True)
 
 
 # ── Workflow steps ─────────────────────────────────────────────────────────────
@@ -711,6 +718,34 @@ async def feedback_post(body: FeedbackBody) -> Response:
         "feedback_received question_id=%s answer_id=%s rating=%s",
         body.question_id, body.answer_id, body.rating,
     )
+
+    # Validate that the answer exists AND belongs to the submitting user.
+    # This prevents a user from submitting feedback on someone else's answer
+    # by modifying the card payload.
+    existing_answer = await asyncio.to_thread(
+        get_document, get_chat_container(), body.question_id, body.conversation_id
+    )
+    if not existing_answer:
+        logger.warning(
+            "feedback_invalid_answer_id question_id=%s user_id=%s",
+            body.question_id, body.user_id,
+        )
+        return Response(
+            content=json.dumps({"status": "error", "detail": "Answer not found."}),
+            media_type="application/json",
+            status_code=404,
+        )
+    if existing_answer.get("user_id") != body.user_id:
+        logger.warning(
+            "feedback_ownership_mismatch question_id=%s claimant=%s owner=%s",
+            body.question_id, body.user_id, existing_answer.get("user_id"),
+        )
+        return Response(
+            content=json.dumps({"status": "error", "detail": "Forbidden."}),
+            media_type="application/json",
+            status_code=403,
+        )
+
     record = FeedbackRecord(
         id=f"fb-{body.answer_id}",   # fixed ID — Cosmos upsert overwrites on double-submit
         question_id=body.question_id,

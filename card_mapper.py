@@ -5,22 +5,51 @@ Two separate cards:
 2. build_feedback_card — just 👍 👎 with collapsible comment
 """
 from __future__ import annotations
+import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import quote as _url_quote
+from urllib.parse import quote as _url_quote, urlparse
+
+logger = logging.getLogger(__name__)
+
+# Approved URL scheme and hostname patterns for source links.
+# Only URLs matching these are rendered as clickable links — anything else
+# is dropped and shown as title-only to prevent phishing via KB documents.
+_ALLOWED_SCHEMES  = frozenset({"https"})
+_ALLOWED_HOST_RE  = re.compile(
+    r"""
+    ^(
+        [\w-]+\.sharepoint\.com        |   # SharePoint / OneDrive
+        [\w-]+\.blob\.core\.windows\.net|  # Azure Blob
+        [\w-]+\.azurewebsites\.net     |   # Azure Web Apps
+        [\w-]+\.microsoft\.com         |   # Microsoft docs
+        [\w-]+\.ironman\.com               # IRONMAN domain
+    )$
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
 
 
 def _safe_url(url: str | None) -> str | None:
-    """Percent-encode a URL to make it safe for Adaptive Card markdown links.
+    """Validate URL against the approved domain allowlist, then percent-encode.
 
-    Preserves all URL structural characters so the link still resolves.
-    Only encodes characters that would break the Markdown link syntax or
-    cause Adaptive Card rendering issues (principally unencoded spaces and
-    control characters).
+    Returns None if the URL is missing, uses a non-HTTPS scheme, or points to
+    a host not on the allowlist — callers render title-only in that case.
     """
     if not url:
         return None
-    # safe= keeps all valid URL chars intact; encodes spaces and control chars.
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        logger.warning("card_mapper_url_parse_error url=%.120s", url)
+        return None
+    if parsed.scheme not in _ALLOWED_SCHEMES:
+        logger.warning("card_mapper_url_blocked scheme=%s url=%.120s", parsed.scheme, url)
+        return None
+    if not _ALLOWED_HOST_RE.match(parsed.netloc):
+        logger.warning("card_mapper_url_blocked host=%s url=%.120s", parsed.netloc, url)
+        return None
     return _url_quote(url, safe=":/?=&%#+@!$,;")
 
 
