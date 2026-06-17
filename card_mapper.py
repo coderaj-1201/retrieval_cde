@@ -160,12 +160,18 @@ def build_answer_card(agent_response: dict) -> dict:
             "wrap": True, "size": "Small", "weight": "Bolder",
             "spacing": "Medium", "separator": True,
         })
-        for cite in llm_citations[:5]:
+        seen_titles: set[str] = set()
+        for cite in llm_citations:
             raw_title = cite.get("title") or "Source"
             # Strip " (p.N)" and " | heading" suffixes that the LLM echoes
             # back from the context label — display and URL lookup use the
             # clean doc name only.
             title = re.sub(r"\s*\(p\.\d+\).*$", "", raw_title).strip()
+            if title in seen_titles:
+                continue
+            seen_titles.add(title)
+            if len(seen_titles) > 5:
+                break
             score = float(cite.get("confidence", 0.0))
             url   = url_map.get(title)
             body.append(_citation_row(title, url, score))
