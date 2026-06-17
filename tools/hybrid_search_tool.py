@@ -111,13 +111,9 @@ def hybrid_search(
     k      = top_k or settings.RETRIEVAL_TOP_K
     client = get_search_client()
 
-    # Exclude deleted AND restricted documents.
-    # is_restricted=true means the document requires elevated access that the
-    # end-user chatbot cannot verify — those documents must never surface in
-    # chat responses. Access control at the SharePoint link destination handles
-    # the viewing permission; this filter prevents the content from leaking
-    # into the answer text at all.
-    odata_filter = f"domain eq '{domain}' and is_deleted eq false and (is_restricted eq false or is_restricted eq null)"
+    # Exclude soft-deleted documents.
+    # is_restricted filter is omitted until the field is added to the search index schema.
+    odata_filter = f"domain eq '{domain}' and is_deleted eq false"
     if chunk_types:
         type_filter   = " or ".join(f"chunk_type eq '{t}'" for t in chunk_types)
         odata_filter += f" and ({type_filter})"
