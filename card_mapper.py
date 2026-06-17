@@ -94,15 +94,16 @@ def _confidence_badge(score: float) -> tuple[str, str]:
     return f"🔴 {pct}%", "Low relevance"
 
 
-def _citation_row(link_text: str, score: float | None = None) -> dict:
-    """ColumnSet row: bullet + link on left, confidence badge right-aligned."""
+def _citation_row(title: str, url: str | None = None, score: float | None = None) -> dict:
+    """ColumnSet row: bullet + title on left (clickable if url), confidence badge right-aligned."""
     left_col: dict = {
         "type": "Column",
         "width": "stretch",
         "items": [{
             "type": "TextBlock",
-            "text": f"• {link_text}",
+            "text": f"• {title}",
             "wrap": True, "size": "Small",
+            "color": "Accent" if url else "Default",
         }],
     }
     if score is not None:
@@ -122,11 +123,14 @@ def _citation_row(link_text: str, score: float | None = None) -> dict:
     else:
         columns = [left_col]
 
-    return {
+    row: dict = {
         "type": "ColumnSet",
         "spacing": "Small",
         "columns": columns,
     }
+    if url:
+        row["selectAction"] = {"type": "Action.OpenUrl", "url": url}
+    return row
 
 
 def build_answer_card(agent_response: dict) -> dict:
@@ -160,8 +164,7 @@ def build_answer_card(agent_response: dict) -> dict:
             title = cite.get("title") or "Source"
             score = float(cite.get("confidence", 0.0))
             url   = url_map.get(title)
-            link  = f"[{title}]({url})" if url else title
-            body.append(_citation_row(link, score))
+            body.append(_citation_row(title, url, score))
 
     elif show_citations and not llm_citations:
         # LLM said show citations but returned none — fall back to search sources
@@ -174,8 +177,7 @@ def build_answer_card(agent_response: dict) -> dict:
             for src in sources[:5]:
                 title = src["title"]
                 url   = src.get("url")
-                link  = f"[{title}]({url})" if url else title
-                body.append(_citation_row(link))
+                body.append(_citation_row(title, url))
 
     # show_citations = False → no citation block at all (greeting / low confidence)
 
