@@ -235,10 +235,16 @@ class IronmanBot(ActivityHandler):
             )
             return
 
-        msg_status = data.get("status")
         answer_text = data.get("answer", "").strip()
+        msg_status  = data.get("status")
 
-        if msg_status == "success" and answer_text:
+        if msg_status in ("ticket_raised", "sme_connecting"):
+            await turn_context.send_activity(
+                answer_text or "Your request has been escalated."
+            )
+            return
+
+        if answer_text:
             answer_card = build_answer_card(data)
             await turn_context.send_activity(Activity(
                 type=ActivityTypes.message,
@@ -255,46 +261,9 @@ class IronmanBot(ActivityHandler):
                     content=feedback_card["content"],
                 )],
             ))
-
-        elif msg_status in ("ticket_raised", "sme_connecting"):
-            await turn_context.send_activity(
-                data.get("answer", "Your request has been escalated.")
-            )
-
-        elif msg_status == "failure":
-            opts = data.get("escalation_options", {})
-            if answer_text:
-                # A substantive answer was produced even though confidence fell
-                # below threshold — render it as a card without escalation noise.
-                answer_card = build_answer_card(data)
-                await turn_context.send_activity(Activity(
-                    type=ActivityTypes.message,
-                    attachments=[Attachment(
-                        content_type=answer_card["contentType"],
-                        content=answer_card["content"],
-                    )],
-                ))
-                feedback_card = build_feedback_card(data)
-                await turn_context.send_activity(Activity(
-                    type=ActivityTypes.message,
-                    attachments=[Attachment(
-                        content_type=feedback_card["contentType"],
-                        content=feedback_card["content"],
-                    )],
-                ))
-            else:
-                # Truly no answer — show escalation options.
-                lines = ["I wasn't able to find a confident answer."]
-                if opts:
-                    lines.append("\nYou can escalate:")
-                    for key, opt in opts.items():
-                        lines.append(f"  • Reply `{key}` — {opt.get('sla', '')}")
-                await turn_context.send_activity("\n".join(lines))
-
         else:
-            answer = data.get("answer", "").strip()
             await turn_context.send_activity(
-                answer if answer else "⚠️ Something went wrong. Please try again."
+                "⚠️ I wasn't able to find an answer. Please try rephrasing your question."
             )
 
     async def _handle_card_action(self, turn_context: TurnContext) -> None:

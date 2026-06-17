@@ -97,7 +97,7 @@ class Settings(BaseSettings):
     ZENDESK_GROUP_ID_SME:    int | None       = None
 
     # ── RAG tuning ─────────────────────────────────────────────────────────────
-    CONFIDENCE_THRESHOLD: float          = Field(default=0.75, ge=0.0, le=1.0)
+    CONFIDENCE_THRESHOLD: float          = Field(default=0.65, ge=0.0, le=1.0)
     # Per-citation bar — lower than the overall answer gate so that a source
     # contributing ~50% of a cross-document answer isn't dropped from citations.
     CITATION_CONFIDENCE_THRESHOLD: float = Field(default=0.40, ge=0.0, le=1.0)
