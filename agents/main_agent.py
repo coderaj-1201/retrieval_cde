@@ -654,7 +654,7 @@ async def query(body: QueryBody) -> Response:
             body.idempotency_key,
             conversation_id,
         )
-        if cached:
+        if cached and cached.get("status") in ("success", "out_of_scope", "ticket_raised", "sme_connecting"):
             logger.info("idempotency_hit key=%s", body.idempotency_key)
             clean = {k: v for k, v in cached.items() if not k.startswith("_")}
             return Response(
