@@ -111,6 +111,10 @@ def build_answer_card(agent_response: dict) -> dict:
         {"type": "TextBlock", "text": answer, "wrap": True, "spacing": "None"},
     ]
 
+    sources = normalize_sources(agent_response.get("sources", []))
+    # Build title → url lookup so citations can be rendered as clickable links.
+    url_map: dict[str, str | None] = {s["title"]: s.get("url") for s in sources}
+
     if show_citations and llm_citations:
         body.append({
             "type": "TextBlock", "text": "**Sources**",
@@ -118,28 +122,19 @@ def build_answer_card(agent_response: dict) -> dict:
             "spacing": "Medium", "separator": True,
         })
         for i, cite in enumerate(llm_citations[:5], start=1):
-            title   = cite.get("title") or f"Source {i}"
-            score   = float(cite.get("confidence", 0.0))
-            excerpt = (cite.get("excerpt") or "").strip()
-            badge   = _confidence_badge(score)
-
-            # Title line with confidence badge
+            title = cite.get("title") or f"Source {i}"
+            score = float(cite.get("confidence", 0.0))
+            badge = _confidence_badge(score)
+            url   = url_map.get(title)
+            link  = f"[{title}]({url})" if url else title
             body.append({
                 "type": "TextBlock",
-                "text": f"{i}. **{title}** — {badge}",
+                "text": f"{i}. {link} — {badge}",
                 "wrap": True, "size": "Small", "spacing": "Small",
             })
-            # Excerpt line (subtle)
-            if excerpt:
-                body.append({
-                    "type": "TextBlock",
-                    "text": excerpt,
-                    "wrap": True, "size": "Small", "isSubtle": True, "spacing": "None",
-                })
 
     elif show_citations and not llm_citations:
         # LLM said show citations but returned none — fall back to search sources
-        sources = normalize_sources(agent_response.get("sources", []))
         if sources:
             body.append({
                 "type": "TextBlock", "text": "**Sources**",
@@ -147,12 +142,11 @@ def build_answer_card(agent_response: dict) -> dict:
                 "spacing": "Medium", "separator": True,
             })
             for i, src in enumerate(sources[:5], start=1):
-                page  = f" · Page {src['page']}" if src.get("page") else ""
                 title = src["title"]
                 url   = src.get("url")
-                line  = f"[{i}. {title}]({url}){page}" if url else f"{i}. {title}{page}"
+                line  = f"[{title}]({url})" if url else title
                 body.append({
-                    "type": "TextBlock", "text": line,
+                    "type": "TextBlock", "text": f"{i}. {line}",
                     "wrap": True, "size": "Small", "isSubtle": True, "spacing": "Small",
                 })
 
