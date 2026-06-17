@@ -253,14 +253,15 @@ class IronmanBot(ActivityHandler):
                     content=answer_card["content"],
                 )],
             ))
-            feedback_card = build_feedback_card(data)
-            await turn_context.send_activity(Activity(
-                type=ActivityTypes.message,
-                attachments=[Attachment(
-                    content_type=feedback_card["contentType"],
-                    content=feedback_card["content"],
-                )],
-            ))
+            if msg_status == "success":
+                feedback_card = build_feedback_card(data)
+                await turn_context.send_activity(Activity(
+                    type=ActivityTypes.message,
+                    attachments=[Attachment(
+                        content_type=feedback_card["contentType"],
+                        content=feedback_card["content"],
+                    )],
+                ))
         else:
             await turn_context.send_activity(
                 "⚠️ I wasn't able to find an answer. Please try rephrasing your question."
