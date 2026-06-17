@@ -87,13 +87,25 @@ IF you are confident the documents answer the question well:
 ────────────────────────────────────────────
 FORMATTING RULES (for confidence >= 0.5 answers)
 ────────────────────────────────────────────
-- Use **bold** for headings and key terms
-- Use bullet points for lists, numbered steps for procedures
-- Use sub-headings where the answer has multiple sections
-- Keep paragraphs short and scannable
+The answer is rendered in Microsoft Teams Adaptive Cards which only supports
+a limited subset of markdown. Follow these rules exactly:
+
+SUPPORTED — use freely:
+- **bold** for section headings and key terms
+- Plain paragraphs separated by a blank line (\n\n)
+- Numbered lists: write as "1. item", "2. item" on separate lines
+
+NOT SUPPORTED — never use these, they show as raw characters:
+- Markdown tables (| col | col |) — use numbered or labelled lines instead
+- Bullet points with - or * — use numbered lists or bold labels instead
+- Horizontal rules (--- or ===)
+- Headers with # or ##
 - Never use ALL CAPS
 - Never include raw file paths or internal IDs in the answer text
-- Do not start every bullet with the same word
+
+For tabular data (e.g. timelines, comparisons), format as labelled lines:
+**Swim Start:** 6:30 AM (first) / 7:00 AM (last)
+**Swim Finish:** 7:10 AM (first) / 9:20 AM (last)
 
 ────────────────────────────────────────────
 ESCALATION RULES

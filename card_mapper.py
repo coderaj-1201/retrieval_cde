@@ -133,6 +133,33 @@ def _citation_row(title: str, url: str | None = None, score: float | None = None
     return row
 
 
+def _sanitize_for_teams(text: str) -> str:
+    """Convert unsupported markdown to Teams-safe equivalents.
+
+    Teams Adaptive Cards TextBlock only renders **bold** and _italic_.
+    Tables, bullet dashes, and horizontal rules show as raw characters.
+    """
+    lines = text.strip().splitlines()
+    out = []
+    for line in lines:
+        # Drop horizontal rules
+        if re.match(r"^\s*[-=]{3,}\s*$", line):
+            continue
+        # Drop markdown table separator rows (|---|---|)
+        if re.match(r"^\s*\|[\s|:-]+\|\s*$", line):
+            continue
+        # Convert table data rows (| a | b |) to labelled line
+        if re.match(r"^\s*\|", line) and line.strip().endswith("|"):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            line = "  ".join(c for c in cells if c)
+        # Convert markdown headers (# / ##) to bold
+        line = re.sub(r"^#{1,6}\s+(.+)$", r"**\1**", line)
+        # Convert bullet dashes/asterisks to numbered-style prefix
+        line = re.sub(r"^(\s*)[-*]\s+", r"\1• ", line)
+        out.append(line)
+    return "\n".join(out)
+
+
 def build_answer_card(agent_response: dict) -> dict:
     """Answer card with conditional citation block.
 
@@ -140,7 +167,7 @@ def build_answer_card(agent_response: dict) -> dict:
       - show_citations = True  → render citations with per-doc confidence badge
       - show_citations = False → render answer only (greetings, low-confidence, errors)
     """
-    answer        = (agent_response.get("answer") or "").strip()
+    answer        = _sanitize_for_teams(agent_response.get("answer") or "")
     show_citations = bool(agent_response.get("show_citations", False))
     # LLM-generated citations (title + confidence + excerpt) take priority.
     # Fall back to search-result sources if citations list is absent.
