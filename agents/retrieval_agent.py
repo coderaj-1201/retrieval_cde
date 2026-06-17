@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import signal
 import logging
 from contextlib import asynccontextmanager
@@ -56,6 +57,15 @@ ANSWERING THE QUESTION
 ────────────────────────────────────────────
 Answer using ONLY the retrieved documents. Follow the formatting rules below.
 Evaluate your confidence honestly based on how well the documents answer the question.
+
+IMPORTANT — DOCUMENT COVERAGE LIMITATION:
+You are shown only the top-ranked document chunks, NOT every document in the knowledge base.
+This means:
+- Never state an exact total count of documents, policies, or procedures ("there are 5 policies")
+  unless EVERY one is explicitly listed and visible in the context provided to you.
+- If asked "how many X are there?", list only the ones you can see and say
+  "Based on available documents, I found [N]: [list]. There may be additional documents not shown here."
+- If you cannot see a complete set, say so honestly rather than giving a number that may be wrong.
 
 If the question contains multiple distinct sub-questions (e.g. "What is the SLA? And who approves the RCA?"),
 address EACH sub-question separately with a clear sub-heading or numbered section. Do not merge them into a single paragraph.
@@ -131,11 +141,30 @@ Rules for citations array:
 
 # ── Retrieval steps ────────────────────────────────────────────────────────────
 
+_ENUMERATION_RE = re.compile(
+    r"\b(how many|list all|what are all|enumerate|all (the |the policies|documents?|"
+    r"sops?|procedures?|runbooks?|policies|guidelines?)|count of|total number)\b",
+    re.IGNORECASE,
+)
+
+# When an enumeration query is detected, retrieve more chunks so the LLM
+# has a broader view of available documents rather than only the top-5.
+_ENUMERATION_TOP_K = 20
+
+
+def _is_enumeration_query(query: str) -> bool:
+    return bool(_ENUMERATION_RE.search(query))
+
+
 @step
 async def run_hybrid(inp: RetrievalStepInput) -> list[SearchDocument]:
     try:
-        docs = await asyncio.to_thread(hybrid_search, inp.query, inp.domain)
-        logger.info("hybrid_search_complete domain=%s docs=%d", inp.domain, len(docs))
+        top_k = _ENUMERATION_TOP_K if _is_enumeration_query(inp.query) else None
+        docs = await asyncio.to_thread(hybrid_search, inp.query, inp.domain, top_k=top_k)
+        logger.info(
+            "hybrid_search_complete domain=%s docs=%d enumeration=%s",
+            inp.domain, len(docs), top_k is not None,
+        )
         return docs
     except Exception as exc:
         logger.error("hybrid_search_error domain=%s: %s", inp.domain, exc, exc_info=True)
@@ -145,16 +174,18 @@ async def run_hybrid(inp: RetrievalStepInput) -> list[SearchDocument]:
 @step
 async def run_hyde(inp: RetrievalStepInput) -> list[SearchDocument]:
     try:
+        top_k = _ENUMERATION_TOP_K if _is_enumeration_query(inp.query) else None
         hypo = await asyncio.to_thread(generate_hypothetical_document, inp.query)
         logger.debug("hyde_generated length=%d", len(hypo))
-        docs = await asyncio.to_thread(hybrid_search, hypo, inp.domain)
+        docs = await asyncio.to_thread(hybrid_search, hypo, inp.domain, top_k=top_k)
         logger.info("hyde_search_complete domain=%s docs=%d", inp.domain, len(docs))
         return docs
     except Exception as exc:
         logger.error("hyde_error domain=%s: %s", inp.domain, exc, exc_info=True)
         logger.warning("hyde_fallback_to_hybrid domain=%s", inp.domain)
         try:
-            return await asyncio.to_thread(hybrid_search, inp.query, inp.domain)
+            top_k = _ENUMERATION_TOP_K if _is_enumeration_query(inp.query) else None
+            return await asyncio.to_thread(hybrid_search, inp.query, inp.domain, top_k=top_k)
         except Exception:
             return []
 
@@ -167,10 +198,11 @@ async def run_decomposition(inp: RetrievalStepInput) -> list[SearchDocument]:
 
         # Limit concurrency to avoid bursting Azure OpenAI and Search quotas.
         semaphore = asyncio.Semaphore(2)
+        top_k = _ENUMERATION_TOP_K if _is_enumeration_query(inp.query) else None
 
         async def _bounded_search(sq: str) -> list[SearchDocument]:
             async with semaphore:
-                return await asyncio.to_thread(hybrid_search, sq, inp.domain)
+                return await asyncio.to_thread(hybrid_search, sq, inp.domain, top_k=top_k)
 
         result_sets = await asyncio.gather(
             *[_bounded_search(sq) for sq in sub_queries],
@@ -186,7 +218,8 @@ async def run_decomposition(inp: RetrievalStepInput) -> list[SearchDocument]:
                 if doc.id not in seen or doc.score > seen[doc.id].score:
                     seen[doc.id] = doc
 
-        merged = sorted(seen.values(), key=lambda d: d.score, reverse=True)[: settings.RETRIEVAL_TOP_K]
+        cap = top_k or settings.RETRIEVAL_TOP_K
+        merged = sorted(seen.values(), key=lambda d: d.score, reverse=True)[:cap]
         logger.info("decomposition_complete domain=%s merged_docs=%d", inp.domain, len(merged))
         return merged
     except Exception as exc:
@@ -280,7 +313,7 @@ async def synthesize_answer(inp: SynthesisInput) -> tuple[str, float, list[Sourc
             # confident enough to show citations at all.
             llm_citations = [
                 c for c in llm_citations
-                if float(c.get("confidence", 0.0) or 0.0) >= settings.CONFIDENCE_THRESHOLD
+                if float(c.get("confidence", 0.0) or 0.0) >= settings.CITATION_CONFIDENCE_THRESHOLD
             ]
         else:
             llm_citations = []
