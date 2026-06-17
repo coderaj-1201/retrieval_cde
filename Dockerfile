@@ -62,8 +62,11 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
          urllib.request.urlopen(f'http://localhost:{port}/health/live', timeout=5); \
          sys.exit(0)"
 
+# WEB_CONCURRENCY lets ACA/Kubernetes override worker count via env var.
+# Default 4 handles ~10-15 concurrent in-flight requests per replica.
+# Keep this low if the container has < 1 vCPU (ACA consumption plan = 0.5 vCPU).
 CMD uvicorn ${SERVICE_MODULE} \
         --host 0.0.0.0 \
         --port ${SERVICE_PORT} \
-        --workers 1 \
+        --workers ${WEB_CONCURRENCY:-4} \
         --no-access-log
