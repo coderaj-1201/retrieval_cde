@@ -77,8 +77,9 @@ class RetrievalStepInput:
 @dataclass
 class SynthesisInput:
     """Single input for MAF @step synthesize_answer."""
-    query:    str
-    all_docs: list   # list[SearchDocument] — avoid circular import with tools
+    query:           str
+    all_docs:        list   # list[SearchDocument] — avoid circular import with tools
+    session_context: str = ""  # injected only for follow-up queries
 
 
 # ── Core pipeline models ───────────────────────────────────────────────────────
@@ -92,6 +93,7 @@ class OrchestratorRequest:
     conversation_id: str
     user_id:         str
     question_id:     str = ""
+    session_context: str = ""  # forwarded to synthesis for follow-up queries
 
 
 @dataclass

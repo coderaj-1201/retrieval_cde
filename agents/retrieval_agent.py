@@ -285,13 +285,20 @@ async def synthesize_answer(inp: SynthesisInput) -> tuple[str, float, list[Sourc
 
     context = "\n\n".join(capped_parts)
 
+    session_context = inp.session_context
+    user_content = (
+        f"{session_context}\n\nContext:\n{context}\n\nQuestion: {query}"
+        if session_context else
+        f"Context:\n{context}\n\nQuestion: {query}"
+    )
+
     @llm_retry
     def _call_llm():
         return get_openai_client().chat.completions.create(
             model=settings.AZURE_OPENAI_CHAT_DEPLOYMENT,
             messages=[
                 {"role": "system", "content": _SYNTHESIS_SYSTEM},
-                {"role": "user",   "content": f"Context:\n{context}\n\nQuestion: {query}"},
+                {"role": "user",   "content": user_content},
             ],
             temperature=settings.SYNTHESIS_TEMPERATURE,
             max_tokens=1000,
@@ -423,6 +430,7 @@ async def retrieval_workflow(request: OrchestratorRequest) -> RetrievalResult:
     answer, confidence, source_docs, show_citations, llm_citations = await synthesize_answer(SynthesisInput(
         query=request.query,
         all_docs=all_docs,
+        session_context=request.session_context,
     ))
 
     logger.info(

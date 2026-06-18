@@ -142,6 +142,48 @@ template — tailor the wording to the actual question each time.
 
 _CLASSIFY_SYSTEM = _build_classify_system()
 
+_REWRITE_SYSTEM = (
+    "You are a query rewriter. The user's question is a follow-up that contains "
+    "pronouns or references to prior conversation turns. Rewrite it into a single, "
+    "self-contained search query that can be understood without any prior context. "
+    "Preserve the user's intent exactly — do not add new topics. "
+    "Return ONLY the rewritten query string, no explanation."
+)
+
+
+async def _rewrite_query_if_needed(query: str, session_context: str) -> str:
+    """
+    If the query looks like a follow-up (pronoun / short / continuation phrase),
+    use the session context to rewrite it into a standalone searchable query.
+    Vector search always receives the rewritten query; synthesis receives both
+    the rewritten query and the session context so it can frame the answer.
+    """
+    from shared.memory import needs_session_context  # noqa: PLC0415
+    if not session_context or not needs_session_context(query):
+        return query
+
+    @llm_retry
+    def _call():
+        return get_openai_client().chat.completions.create(
+            model=settings.AZURE_OPENAI_CHAT_DEPLOYMENT,
+            messages=[
+                {"role": "system", "content": _REWRITE_SYSTEM},
+                {"role": "user",   "content": f"{session_context}\n\nFollow-up question: {query}"},
+            ],
+            temperature=0,
+            max_tokens=120,
+        )
+
+    try:
+        resp = await asyncio.to_thread(_call)
+        rewritten = resp.choices[0].message.content.strip().strip('"')
+        if rewritten:
+            logger.info("query_rewritten original=%.60s rewritten=%.60s", query, rewritten)
+            return rewritten
+    except Exception as exc:
+        logger.warning("query_rewrite_failed query=%.60s: %s", query, exc)
+    return query
+
 
 def _internal_headers() -> dict[str, str]:
     """Return auth headers for outbound internal calls."""
@@ -461,6 +503,11 @@ async def orchestrator_workflow(inp: OrchestratorInput) -> FinalResponse:
     last_result: RetrievalResult | None = None
     tools_tried: list[str] = []
 
+    # Rewrite once before the retry loop — the rewritten query is used for all
+    # vector search attempts; session_context is forwarded to synthesis so the
+    # LLM can frame follow-up answers correctly.
+    search_query = await _rewrite_query_if_needed(user_query.text, session_context)
+
     for attempt_idx in range(settings.MAX_RETRIEVAL_ATTEMPTS):
         idx     = min(attempt_idx, len(_TOOL_LADDER) - 1)
         tool    = _TOOL_LADDER[idx]
@@ -474,16 +521,18 @@ async def orchestrator_workflow(inp: OrchestratorInput) -> FinalResponse:
         record_tool(tool=tool.value, domain=domain.value)
 
         primary_req = OrchestratorRequest(
-            query=user_query.text, domain=domain, tool=tool,
+            query=search_query, domain=domain, tool=tool,
             attempt=attempt, conversation_id=user_query.conversation_id,
             user_id=user_query.user_id, question_id=user_query.question_id,
+            session_context=session_context,
         )
 
         if is_cross_domain and secondary_domain:
             secondary_req = OrchestratorRequest(
-                query=user_query.text, domain=secondary_domain, tool=tool,
+                query=search_query, domain=secondary_domain, tool=tool,
                 attempt=attempt, conversation_id=user_query.conversation_id,
                 user_id=user_query.user_id, question_id=user_query.question_id,
+                session_context=session_context,
             )
             primary_result, secondary_result = await asyncio.gather(
                 _call_retrieval_safe(primary_req),
