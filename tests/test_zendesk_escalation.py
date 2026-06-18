@@ -240,19 +240,21 @@ class TestEscalationFallback:
         """When Zendesk is absent, SB path is taken and a REF- string returned."""
         from shared.escalation_client import raise_ticket
 
-        mock_sender = MagicMock()
-        mock_sender.__enter__ = MagicMock(return_value=mock_sender)
-        mock_sender.__exit__ = MagicMock(return_value=False)
+        sb_calls = []
+
+        def _fake_sb_send(escalation_type, payload, correlation_id):
+            sb_calls.append((escalation_type, payload, correlation_id))
 
         with patch("shared.escalation_client.settings", self._sb_settings()), \
-             patch("shared.escalation_client._sb_get_sender", return_value=mock_sender):
+             patch("shared.escalation_client._sb_send", side_effect=_fake_sb_send):
             ref = raise_ticket(
                 user_id="u", conversation_id="c", question_id="q",
                 question_text="Q", domain="hr",
             )
 
         assert ref.startswith("REF-")
-        mock_sender.send_messages.assert_called_once()
+        assert len(sb_calls) == 1
+        assert sb_calls[0][0] == "raise_ticket"
 
     def test_zendesk_failure_falls_back_to_sb(self):
         """Zendesk HTTP error falls back to SB when SB is also configured."""
@@ -268,13 +270,14 @@ class TestEscalationFallback:
             "500", request=MagicMock(), response=err_resp
         )
 
-        mock_sender = MagicMock()
-        mock_sender.__enter__ = MagicMock(return_value=mock_sender)
-        mock_sender.__exit__ = MagicMock(return_value=False)
+        sb_calls = []
+
+        def _fake_sb_send(escalation_type, payload, correlation_id):
+            sb_calls.append((escalation_type, payload, correlation_id))
 
         with patch("shared.escalation_client.settings", ms), \
              patch("httpx.Client") as mock_client, \
-             patch("shared.escalation_client._sb_get_sender", return_value=mock_sender):
+             patch("shared.escalation_client._sb_send", side_effect=_fake_sb_send):
             mock_client.return_value.__enter__.return_value.post.return_value = err_resp
             ref = raise_ticket(
                 user_id="u", conversation_id="c", question_id="q",
@@ -282,7 +285,7 @@ class TestEscalationFallback:
             )
 
         assert ref.startswith("REF-")
-        mock_sender.send_messages.assert_called_once()
+        assert len(sb_calls) == 1
 
     def test_no_channel_raises_runtime_error(self):
         """If neither Zendesk nor SB is configured, RuntimeError is raised."""
@@ -342,6 +345,7 @@ class TestTelemetrySetup:
 
     def test_setup_meters_binds_instruments(self):
         """After setup_meters(), instruments are non-None."""
+        pytest.importorskip("opentelemetry", reason="opentelemetry not installed")
         import shared.telemetry as tel
 
         # Reset for clean test
