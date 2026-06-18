@@ -454,6 +454,8 @@ async def main_agent_workflow(user_query: UserQuery) -> QueryResponse:
         tools_used=final.tools_used,
         sources=final.sources,
         status=final.status,
+        show_citations=final.show_citations,
+        citations=final.citations or [],
     ).to_dict())
 
     await append_turn(session, ConversationTurn(

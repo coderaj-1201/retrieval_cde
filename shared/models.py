@@ -327,6 +327,8 @@ class ChatHistoryRecord:
     tools_used:      list[str]
     sources:         list[dict]
     status:          str
+    show_citations:  bool      = False
+    citations:       list[dict] = field(default_factory=list)
     timestamp:       str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> dict:
@@ -343,6 +345,8 @@ class ChatHistoryRecord:
             "tools_used":      self.tools_used,
             "sources":         self.sources,
             "status":          self.status,
+            "show_citations":  self.show_citations,
+            "citations":       self.citations,
             "timestamp":       self.timestamp,
             "type":            "chat_history",
         }
