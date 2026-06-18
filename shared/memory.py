@@ -123,24 +123,24 @@ _PRONOUN_RE = re.compile(
 )
 # Max chars of answer shown per turn in the context block.
 _SESSION_CONTEXT_ANSWER_CHARS = 150
-# Number of recent turns to include when context IS needed.
-_SESSION_CONTEXT_TURNS = 5
+# Always include the last 3 turns — kept small to stay lean on tokens.
+# The classifier LLM now decides follow-up detection via is_followup;
+# we always provide a small window so it has enough context without
+# bloating every prompt.
+_SESSION_CONTEXT_TURNS = 3
 
 
 def needs_session_context(query: str) -> bool:
     """
-    Returns True only when the query looks like a follow-up or continuation
-    of a prior turn. Standalone clear questions return False so the session
-    history is never injected unnecessarily.
+    Heuristic retained as a fallback for the rewrite step.
+    Primary follow-up detection is now done by the classifier LLM via
+    the is_followup field — this function is no longer the main gate.
     """
     q = query.strip().lower()
-    # Very short queries are almost always follow-ups or ambiguous.
     if len(q) < 40:
         return True
-    # Contains a known follow-up phrase.
     if any(phrase in q for phrase in _FOLLOWUP_PHRASES):
         return True
-    # Contains a bare pronoun that likely references a prior topic.
     if _PRONOUN_RE.search(q):
         return True
     return False
@@ -148,15 +148,12 @@ def needs_session_context(query: str) -> bool:
 
 def format_session_context(session: SessionMemory, query: str = "") -> str:
     """
-    Render recent turns as a compact string for prompt injection.
-
-    Context is only injected when the query signals it is a follow-up
-    (short query, pronoun, or known continuation phrase). Standalone
-    questions receive an empty string so the prompt stays clean.
+    Always returns the last few turns so the classifier LLM can decide
+    whether the query is a follow-up. The old rule-based gate caused it
+    to miss topic-reference follow-ups like "What about the approval
+    process?" that lack explicit pronouns.
     """
     if not session.turns:
-        return ""
-    if query and not needs_session_context(query):
         return ""
     recent = session.turns[-_SESSION_CONTEXT_TURNS:]
     lines = [f"## Recent conversation (last {len(recent)} turn(s))"]

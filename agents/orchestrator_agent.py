@@ -82,10 +82,20 @@ Return ONLY JSON:
   "domain_confidence": <0.0-1.0>,
   "secondary_domain": "{domain_values}|none",
   "tool": "hybrid|hyde|decomposition",
+  "is_followup": true|false,
   "response_type": "greeting|general|clarify|decline",
   "deflection_message": "<only when domain=none, see rules below>",
   "reason": "brief"
 }}
+
+is_followup:
+Set true when the question only makes sense in the context of the prior turns shown above.
+This includes — but is NOT limited to — pronouns ("it", "they", "that"), short queries,
+and topic references that implicitly continue a prior discussion even without pronouns
+(e.g. "What about the approval process?" after discussing leave policy,
+"And the SLA?" after discussing a procedure, "Is it different for contractors?" after
+discussing an employee policy). Set false for fully standalone questions that need no
+prior context to answer.
 
 domain:
 {domain_lines}
@@ -151,15 +161,13 @@ _REWRITE_SYSTEM = (
 )
 
 
-async def _rewrite_query_if_needed(query: str, session_context: str) -> str:
+async def _rewrite_query_if_needed(query: str, session_context: str, is_followup: bool) -> str:
     """
-    If the query looks like a follow-up (pronoun / short / continuation phrase),
-    use the session context to rewrite it into a standalone searchable query.
-    Vector search always receives the rewritten query; synthesis receives both
-    the rewritten query and the session context so it can frame the answer.
+    Rewrites the query into a standalone searchable form when the classifier
+    flagged it as a follow-up. Vector search always receives the rewritten
+    query; synthesis receives both so it can frame the answer in context.
     """
-    from shared.memory import needs_session_context  # noqa: PLC0415
-    if not session_context or not needs_session_context(query):
+    if not is_followup or not session_context:
         return query
 
     @llm_retry
@@ -198,7 +206,7 @@ def _internal_headers() -> dict[str, str]:
 class ClassifyResult:
     __slots__ = (
         "domain", "domain_confidence", "secondary_domain", "tool", "failed",
-        "out_of_scope", "deflection_message",
+        "out_of_scope", "deflection_message", "is_followup",
     )
 
     def __init__(
@@ -210,6 +218,7 @@ class ClassifyResult:
         failed: bool = False,
         out_of_scope: bool = False,
         deflection_message: str = "",
+        is_followup: bool = False,
     ) -> None:
         self.domain              = domain
         self.domain_confidence   = domain_confidence
@@ -218,6 +227,7 @@ class ClassifyResult:
         self.failed              = failed
         self.out_of_scope        = out_of_scope
         self.deflection_message  = deflection_message
+        self.is_followup         = is_followup
 
 
 @step
@@ -308,11 +318,13 @@ async def classify_query(inp: ClassifyInput) -> ClassifyResult:
         logger.warning("unknown_tool value='%s' defaulting=hybrid", tool_raw)
         tool = RetrievalTool.HYBRID
 
+    is_followup = bool(raw.get("is_followup", False))
+
     logger.info(
-        "classify_complete domain=%s confidence=%.2f secondary=%s tool=%s reason='%s'",
-        domain, domain_confidence, secondary_domain or "none", tool, raw.get("reason", ""),
+        "classify_complete domain=%s confidence=%.2f secondary=%s tool=%s is_followup=%s reason='%s'",
+        domain, domain_confidence, secondary_domain or "none", tool, is_followup, raw.get("reason", ""),
     )
-    return ClassifyResult(domain, domain_confidence, secondary_domain, tool)
+    return ClassifyResult(domain, domain_confidence, secondary_domain, tool, is_followup=is_followup)
 
 
 async def _call_retrieval(req: OrchestratorRequest) -> RetrievalResult:
@@ -506,7 +518,11 @@ async def orchestrator_workflow(inp: OrchestratorInput) -> FinalResponse:
     # Rewrite once before the retry loop — the rewritten query is used for all
     # vector search attempts; session_context is forwarded to synthesis so the
     # LLM can frame follow-up answers correctly.
-    search_query = await _rewrite_query_if_needed(user_query.text, session_context)
+    # is_followup comes from the classifier LLM, which catches topic-reference
+    # follow-ups that the old pronoun/phrase heuristic missed.
+    search_query = await _rewrite_query_if_needed(
+        user_query.text, session_context, classification.is_followup
+    )
 
     for attempt_idx in range(settings.MAX_RETRIEVAL_ATTEMPTS):
         idx     = min(attempt_idx, len(_TOOL_LADDER) - 1)
