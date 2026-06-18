@@ -201,8 +201,8 @@ class TestSynthesisLLMFailures:
         return docs
 
     @pytest.mark.asyncio
-    async def test_synthesis_non_json_falls_back_to_raw_content(self):
-        """LLM returning prose (not JSON) must not crash; falls back to raw text."""
+    async def test_synthesis_non_json_falls_back_to_graceful_error(self):
+        """LLM returning prose (not JSON) must not crash; returns a user-friendly error message."""
         from agents.retrieval_agent import synthesize_answer
         from shared.models import SynthesisInput
 
@@ -211,12 +211,14 @@ class TestSynthesisLLMFailures:
 
         with patch("agents.retrieval_agent.get_openai_client") as m:
             m.return_value.chat.completions.create.return_value = _make_chat_response(raw_prose)
-            answer, confidence, sources = await synthesize_answer(SynthesisInput(
+            answer, confidence, sources, show_citations, citations = await synthesize_answer(SynthesisInput(
                 query="What is the leave policy?", all_docs=docs,
             ))
 
-        assert answer == raw_prose
+        assert "unable to produce" in answer.lower() or "rephrase" in answer.lower()
         assert confidence == 0.5   # default on parse failure
+        assert show_citations is False
+        assert citations == []
 
     @pytest.mark.asyncio
     async def test_synthesis_confidence_above_1_clamped(self):
@@ -228,7 +230,7 @@ class TestSynthesisLLMFailures:
             m.return_value.chat.completions.create.return_value = _make_chat_response(
                 _synthesis_json(confidence=2.5)
             )
-            _, confidence, _ = await synthesize_answer(SynthesisInput(
+            _, confidence, *_ = await synthesize_answer(SynthesisInput(
                 query="q", all_docs=self._make_docs(),
             ))
         assert confidence == 1.0
@@ -243,7 +245,7 @@ class TestSynthesisLLMFailures:
             m.return_value.chat.completions.create.return_value = _make_chat_response(
                 _synthesis_json(confidence=-0.3)
             )
-            _, confidence, _ = await synthesize_answer(SynthesisInput(
+            _, confidence, *_ = await synthesize_answer(SynthesisInput(
                 query="q", all_docs=self._make_docs(),
             ))
         assert confidence == 0.0
@@ -258,10 +260,10 @@ class TestSynthesisLLMFailures:
             m.return_value.chat.completions.create.return_value = _make_chat_response(
                 json.dumps({"answer": "", "confidence": 0.9})
             )
-            answer, confidence, _ = await synthesize_answer(SynthesisInput(
+            answer, confidence, *_ = await synthesize_answer(SynthesisInput(
                 query="q", all_docs=self._make_docs(),
             ))
-        # Empty answer → ValueError → falls back to raw JSON string with confidence=0.5
+        # Empty answer → ValueError → falls back to graceful error message with confidence=0.5
         assert confidence == 0.5
 
     @pytest.mark.asyncio
@@ -273,7 +275,7 @@ class TestSynthesisLLMFailures:
         with patch("agents.retrieval_agent.get_openai_client") as m:
             m.return_value.chat.completions.create.side_effect = RuntimeError("Network dead")
             with patch("tenacity.nap.time.sleep"):
-                answer, confidence, _ = await synthesize_answer(SynthesisInput(
+                answer, confidence, *_ = await synthesize_answer(SynthesisInput(
                     query="q", all_docs=self._make_docs(),
                 ))
 
@@ -287,7 +289,7 @@ class TestSynthesisLLMFailures:
         from shared.models import SynthesisInput
 
         with patch("agents.retrieval_agent.get_openai_client") as m:
-            answer, confidence, sources = await synthesize_answer(SynthesisInput(
+            answer, confidence, sources, *_ = await synthesize_answer(SynthesisInput(
                 query="What is the refund policy?", all_docs=[],
             ))
             m.return_value.chat.completions.create.assert_not_called()

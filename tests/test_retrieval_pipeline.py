@@ -331,7 +331,7 @@ class TestSourceDeduplication:
                     content=json.dumps({"answer": "A", "confidence": 0.9, "escalation_recommended": False})
                 ))]
             )
-            _, _, sources = await synthesize_answer(SynthesisInput(query="q", all_docs=docs))
+            _, _, sources, *_ = await synthesize_answer(SynthesisInput(query="q", all_docs=docs))
 
         urls = [s.url for s in sources if s.url]
         assert urls.count(shared_url) == 1   # must appear only once

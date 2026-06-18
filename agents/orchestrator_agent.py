@@ -628,8 +628,8 @@ async def orchestrator_workflow(inp: OrchestratorInput) -> FinalResponse:
         conversation_id=user_query.conversation_id,
         user_id=user_query.user_id,
         question_id=user_query.question_id,
-        show_citations=False,
-        citations=[],
+        show_citations=last_result.show_citations if last_result else False,
+        citations=last_result.citations if last_result else [],
         tools_used=tools_tried,
     )
 

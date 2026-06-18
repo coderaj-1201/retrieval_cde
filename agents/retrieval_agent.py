@@ -347,10 +347,10 @@ async def synthesize_answer(inp: SynthesisInput) -> tuple[str, float, list[Sourc
             answer = (truncated[: last_stop + 1] if last_stop > max_chars // 2 else truncated) + "\n\n*[Answer truncated — ask a more specific question for full details.]*"
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
         logger.warning(
-            "synthesis_parse_error: %s — using raw content with default confidence",
+            "synthesis_parse_error: %s — returning graceful error with default confidence",
             exc,
         )
-        answer         = raw_content
+        answer         = "I was unable to produce a formatted answer. Please try rephrasing your question."
         confidence     = 0.5
         show_citations = False
         llm_citations  = []
