@@ -120,6 +120,7 @@ class Settings(BaseSettings):
     # ── Memory ─────────────────────────────────────────────────────────────────
     SESSION_MAX_TURNS: int       = Field(default=10,     ge=1,   le=50)
     SESSION_TTL_SECONDS: int     = Field(default=604800, ge=3600)
+    SESSION_CONTEXT_TURNS: int   = Field(default=3,      ge=1,   le=10)
     LTM_SUMMARY_EVERY_N: int     = Field(default=5,      ge=1,   le=20)
     LTM_MAX_SUMMARY_CHARS: int   = Field(default=3000,   ge=500, le=10000)
     LTM_MAX_FACTS: int           = Field(default=10,     ge=3,   le=30)

@@ -467,7 +467,7 @@ async def main_agent_workflow(user_query: UserQuery) -> QueryResponse:
         tools_used=final.tools_used,
     ))
 
-    if len(session.turns) % settings.LTM_SUMMARY_EVERY_N == 0:
+    if session.total_turns % settings.LTM_SUMMARY_EVERY_N == 0:
         task = asyncio.create_task(
             _run_ltm_update(user_query.user_id, session),
             name=f"ltm-update-{user_query.user_id}",

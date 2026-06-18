@@ -273,6 +273,7 @@ class SessionMemory:
     conversation_id: str
     user_id:         str
     turns:           list[ConversationTurn] = field(default_factory=list)
+    total_turns:     int = 0
     created_at:      str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at:      str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -283,6 +284,7 @@ class SessionMemory:
             "conversation_id": self.conversation_id,
             "user_id":         self.user_id,
             "turns":           [t.to_dict() for t in self.turns],
+            "total_turns":     self.total_turns,
             "created_at":      self.created_at,
             "updated_at":      self.updated_at,
             "type":            "session",

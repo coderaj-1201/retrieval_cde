@@ -83,6 +83,7 @@ async def load_session(conversation_id: str, user_id: str) -> SessionMemory:
             conversation_id=conversation_id,
             user_id=user_id,
             turns=turns,
+            total_turns=doc.get("total_turns", len(turns)),
             created_at=doc.get("created_at", datetime.now(timezone.utc).isoformat()),
             updated_at=doc.get("updated_at", datetime.now(timezone.utc).isoformat()),
         )
@@ -95,6 +96,7 @@ async def load_session(conversation_id: str, user_id: str) -> SessionMemory:
 
 async def append_turn(session: SessionMemory, turn: ConversationTurn) -> None:
     """Append turn, trim to window, persist to Cosmos."""
+    session.total_turns += 1
     session.turns.append(turn)
     if len(session.turns) > settings.SESSION_MAX_TURNS:
         session.turns = session.turns[-settings.SESSION_MAX_TURNS:]
@@ -123,11 +125,6 @@ _PRONOUN_RE = re.compile(
 )
 # Max chars of answer shown per turn in the context block.
 _SESSION_CONTEXT_ANSWER_CHARS = 150
-# Always include the last 3 turns — kept small to stay lean on tokens.
-# The classifier LLM now decides follow-up detection via is_followup;
-# we always provide a small window so it has enough context without
-# bloating every prompt.
-_SESSION_CONTEXT_TURNS = 3
 
 
 def needs_session_context(query: str) -> bool:
@@ -155,7 +152,7 @@ def format_session_context(session: SessionMemory, query: str = "") -> str:
     """
     if not session.turns:
         return ""
-    recent = session.turns[-_SESSION_CONTEXT_TURNS:]
+    recent = session.turns[-settings.SESSION_CONTEXT_TURNS:]
     lines = [f"## Recent conversation (last {len(recent)} turn(s))"]
     for t in recent:
         lines.append(f"Q: {t.question}")
@@ -266,5 +263,5 @@ def format_ltm_context(ltm: LongTermMemoryRecord | None) -> str:
     lines.append(ltm.summary)
     if ltm.key_facts:
         lines.append("Key facts:")
-        lines.extend(f"- {f}" for f in ltm.key_facts[:10])
+        lines.extend(f"- {f}" for f in ltm.key_facts[:settings.LTM_MAX_FACTS])
     return "\n".join(lines)
