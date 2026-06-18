@@ -130,7 +130,6 @@ OUTPUT FORMAT — always return valid JSON, nothing else
 {
   "answer": "<your formatted answer here — plain text with markdown>",
   "confidence": <float 0.0-1.0>,
-  "escalation_recommended": <true|false>,
   "show_citations": <true|false>,
   "citations": [
     {

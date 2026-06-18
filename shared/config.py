@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     CONFIDENCE_THRESHOLD: float          = Field(default=0.65, ge=0.0, le=1.0)
     # Per-citation bar — lower than the overall answer gate so that a source
     # contributing ~50% of a cross-document answer isn't dropped from citations.
-    CITATION_CONFIDENCE_THRESHOLD: float = Field(default=0.40, ge=0.0, le=1.0)
+    CITATION_CONFIDENCE_THRESHOLD: float = Field(default=0.20, ge=0.0, le=1.0)
     MAX_RETRIEVAL_ATTEMPTS: int  = Field(default=3,    ge=1,   le=5)
     RETRIEVAL_TOP_K: int         = Field(default=5,    ge=1,   le=20)
     SYNTHESIS_TEMPERATURE: float = Field(default=0.0,  ge=0.0, le=1.0)
@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     SYNTHESIS_MAX_CONTEXT_CHARS: int = Field(default=12000, ge=2000, le=40000)
     # Max source citations returned to the caller (additional sources still
     # contribute to the synthesis context, only the citation list is capped).
-    SYNTHESIS_MAX_SOURCES: int   = Field(default=5,    ge=1,   le=10)
+    SYNTHESIS_MAX_SOURCES: int   = Field(default=8,    ge=1,   le=10)
     # Hard cap on the final answer text length (chars) sent to the user.
     # ~3000 chars ≈ ~500 words — readable in Teams without excessive scrolling.
     SYNTHESIS_MAX_ANSWER_CHARS: int = Field(default=3000, ge=500, le=8000)

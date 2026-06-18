@@ -197,7 +197,7 @@ def build_answer_card(agent_response: dict) -> dict:
             if title in seen_titles:
                 continue
             seen_titles.add(title)
-            if len(seen_titles) > 5:
+            if len(seen_titles) > 8:
                 break
             score = float(cite.get("confidence", 0.0))
             url   = url_map.get(title)
@@ -211,12 +211,22 @@ def build_answer_card(agent_response: dict) -> dict:
                 "wrap": True, "size": "Small", "weight": "Bolder",
                 "spacing": "Medium", "separator": True,
             })
-            for src in sources[:5]:
+            for src in sources[:8]:
                 title = src["title"]
                 url   = src.get("url")
                 body.append(_citation_row(title, url))
 
-    # show_citations = False → no citation block at all (greeting / low confidence)
+    elif not show_citations and sources:
+        # Partial / low-confidence answer that still came from documents —
+        # show plain references without confidence badges.
+        # sources=[] for greetings/out-of-scope so they stay clean.
+        body.append({
+            "type": "TextBlock", "text": "**References**",
+            "wrap": True, "size": "Small", "weight": "Bolder",
+            "spacing": "Medium", "separator": True,
+        })
+        for src in sources[:5]:
+            body.append(_citation_row(src["title"], src.get("url")))
 
     return {
         "contentType": "application/vnd.microsoft.card.adaptive",
