@@ -74,7 +74,6 @@ IF you are not confident the documents answer the question well:
   - Give a brief, honest, specific answer with what little you do know — this
     text WILL be shown to the user, so make it useful, not a generic apology
   - Do NOT show any document citations
-  - Recommend escalation
   - Set show_citations = false
   - Score confidence honestly low (well below the midpoint)
 

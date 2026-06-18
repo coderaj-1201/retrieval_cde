@@ -404,14 +404,13 @@ async def main_agent_workflow(user_query: UserQuery) -> QueryResponse:
             attempts_used=0,
             tools_used=[],
             sources=[],
-            escalation_options=_ESCALATION_OPTIONS,
+            escalation_options=None,
         )
 
     # Only true "error" (no usable model output at all) blanks the answer —
     # "failure" (low confidence after retries) still has a genuine LLM-written
     # answer worth showing, just without citations.
     has_answer = final.status != "error"
-    show_escalation_options = final.status in ("failure", "error")
     domain_str = (
         final.domain.value.upper()
         if isinstance(final.domain, Domain)
@@ -434,7 +433,7 @@ async def main_agent_workflow(user_query: UserQuery) -> QueryResponse:
         attempts_used=final.attempts_used,
         tools_used=final.tools_used,
         sources=final.sources,
-        escalation_options=_ESCALATION_OPTIONS if show_escalation_options else None,
+        escalation_options=None,
         show_citations=final.show_citations,
         citations=final.citations,
     )
@@ -693,7 +692,7 @@ async def query(body: QueryBody) -> Response:
         attempts_used=0,
         tools_used=[],
         sources=[],
-        escalation_options=_ESCALATION_OPTIONS,
+        escalation_options=None,
     )
 
     logger.info(
