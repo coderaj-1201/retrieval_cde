@@ -301,7 +301,7 @@ async def synthesize_answer(inp: SynthesisInput) -> tuple[str, float, list[Sourc
                 {"role": "user",   "content": user_content},
             ],
             temperature=settings.SYNTHESIS_TEMPERATURE,
-            max_tokens=1000,
+            max_tokens=settings.SYNTHESIS_MAX_TOKENS,
             response_format={"type": "json_object"},
         )
 

@@ -116,6 +116,11 @@ class Settings(BaseSettings):
     # Hard cap on the final answer text length (chars) sent to the user.
     # ~3000 chars ≈ ~500 words — readable in Teams without excessive scrolling.
     SYNTHESIS_MAX_ANSWER_CHARS: int = Field(default=3000, ge=500, le=8000)
+    # Max tokens the synthesis LLM may generate. Must be large enough to hold
+    # the full JSON envelope (answer + citations + keys) without truncation.
+    # Truncated JSON causes a JSONDecodeError → fallback to raw response blob.
+    # 3000 tokens ≈ 12000 chars, comfortably covers SYNTHESIS_MAX_ANSWER_CHARS.
+    SYNTHESIS_MAX_TOKENS: int = Field(default=3000, ge=500, le=8000)
 
     # ── Memory ─────────────────────────────────────────────────────────────────
     SESSION_MAX_TURNS: int       = Field(default=10,     ge=1,   le=50)
