@@ -187,6 +187,61 @@ class IronmanBot(ActivityHandler):
             return
         await self._handle_user_question(turn_context)
 
+    async def on_invoke_activity(self, turn_context: TurnContext):
+        """Handle Action.Execute from Universal Action Model (no 'Edited' label)."""
+        from botbuilder.core import InvokeResponse
+        activity = turn_context.activity
+        if activity.name == "adaptiveCards/action":
+            action  = (activity.value or {}).get("action", {})
+            verb    = action.get("verb")
+            data    = action.get("data") or {}
+            if verb == "submit_feedback":
+                thanks_card = await self._process_feedback_invoke(turn_context, data)
+                return InvokeResponse(
+                    status=200,
+                    body={
+                        "statusCode": 200,
+                        "type":       "application/vnd.microsoft.card.adaptive",
+                        "value":      thanks_card,
+                    },
+                )
+        return InvokeResponse(status=200, body={"statusCode": 200})
+
+    async def _process_feedback_invoke(self, turn_context: TurnContext, data: dict) -> dict:
+        """Submit feedback and return the thanks adaptive card dict."""
+        from_prop = turn_context.activity.from_property
+        raw    = data.get("feedback", "")
+        rating = (
+            "thumbs_up" if raw == "positive"
+            else "thumbs_down" if raw == "negative"
+            else "neutral"
+        )
+        comment = _sanitise_user_text(data.get("feedback_comment", ""))[:2000]
+        payload = {
+            "question_id":     data.get("question_id", ""),
+            "answer_id":       data.get("answer_id", ""),
+            "conversation_id": data.get("conversation_id", ""),
+            "user_id":         data.get("user_id") or (from_prop.id if from_prop else "anonymous"),
+            "rating":          rating,
+            "comment":         comment,
+        }
+        try:
+            await call_feedback(payload)
+            logger.info("feedback_saved question_id=%s rating=%s", payload["question_id"], rating)
+        except Exception as exc:
+            logger.error("feedback_failed: %s", exc, exc_info=True)
+        msg = (
+            "👍 Thanks, glad it was helpful!"
+            if rating == "thumbs_up"
+            else "👎 Thanks, we'll use this to improve!"
+        )
+        return {
+            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+            "type":    "AdaptiveCard",
+            "version": "1.6",
+            "body": [{"type": "TextBlock", "text": msg, "wrap": True, "size": "Small", "isSubtle": True}],
+        }
+
     async def _handle_user_question(self, turn_context: TurnContext) -> None:
         activity = turn_context.activity
         await turn_context.send_activity(Activity(type=ActivityTypes.typing))
@@ -278,60 +333,17 @@ class IronmanBot(ActivityHandler):
             await turn_context.send_activity("Action received.")
 
     async def _handle_feedback(self, turn_context: TurnContext, value: dict) -> None:
-        from_prop = turn_context.activity.from_property
-        raw    = value.get("feedback", "")
-        rating = (
-            "thumbs_up" if raw == "positive"
-            else "thumbs_down" if raw == "negative"
-            else "neutral"
-        )
-        comment = _sanitise_user_text(value.get("feedback_comment", ""))[:2000]
-
-        payload = {
-            "question_id":     value.get("question_id", ""),
-            "answer_id":       value.get("answer_id", ""),
-            "conversation_id": value.get("conversation_id", ""),
-            "user_id":         value.get("user_id") or (from_prop.id if from_prop else "anonymous"),
-            "rating":          rating,
-            "comment":         comment,
-        }
-        try:
-            await call_feedback(payload)
-            msg = (
-                "👍 Thanks, glad it was helpful!"
-                if rating == "thumbs_up"
-                else "👎 Thanks, we'll use this to improve!"
-            )
-            thanks_card = {
-                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                "type":    "AdaptiveCard",
-                "version": "1.4",
-                "body": [{
-                    "type": "TextBlock", "text": msg,
-                    "wrap": True, "size": "Small", "isSubtle": True,
-                }],
-            }
-            reply_id = turn_context.activity.reply_to_id
-            if reply_id:
-                from botbuilder.schema import Activity as _A, ActivityTypes as _AT, Attachment as _Att
-                await turn_context.update_activity(_A(
-                    id=reply_id,
-                    type=_AT.message,
-                    attachments=[_Att(
-                        content_type="application/vnd.microsoft.card.adaptive",
-                        content=thanks_card,
-                    )],
-                ))
-            else:
-                await turn_context.send_activity(msg)
-
-            logger.info(
-                "feedback_saved question_id=%s rating=%s",
-                payload["question_id"], rating,
-            )
-        except Exception as exc:
-            logger.error("feedback_failed: %s", exc, exc_info=True)
-            await turn_context.send_activity("Couldn't save feedback. Please try again.")
+        # Legacy path for Action.Submit (kept as fallback). New feedback flow
+        # goes through on_invoke_activity via Action.Execute which avoids the
+        # Teams "Edited" label by returning the thanks card in the invoke response.
+        thanks_card = await self._process_feedback_invoke(turn_context, value)
+        await turn_context.send_activity(Activity(
+            type=ActivityTypes.message,
+            attachments=[Attachment(
+                content_type="application/vnd.microsoft.card.adaptive",
+                content=thanks_card,
+            )],
+        ))
 
     async def _handle_escalate(self, turn_context: TurnContext, value: dict) -> None:
         escalation_type = value.get("escalation_type", "raise_ticket")

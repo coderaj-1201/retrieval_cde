@@ -265,7 +265,9 @@ def build_feedback_card(agent_response: dict) -> dict:
                 "placeholder": placeholder, "isMultiline": True, "maxLength": 500,
             }],
             "actions": [{
-                "type": "Action.Submit", "title": "Submit",
+                "type": "Action.Execute",
+                "title": "Submit",
+                "verb": "submit_feedback",
                 "data": {**_fb, "action": "feedback", "feedback": feedback_type},
             }]
         }
@@ -275,7 +277,7 @@ def build_feedback_card(agent_response: dict) -> dict:
         "content": {
             "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
             "type": "AdaptiveCard",
-            "version": "1.4",
+            "version": "1.6",
             "body": [{
                 "type": "TextBlock", "text": "Was this helpful?",
                 "size": "Small", "isSubtle": True, "spacing": "None",
