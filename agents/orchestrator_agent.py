@@ -147,6 +147,9 @@ session — tone depends on response_type:
 
 Keep deflection_message to 1-3 sentences in all cases. Never use a fixed
 template — tailor the wording to the actual question each time.
+
+STRICT RULE: Never mention HR, IT, Legal, or any individual domain name in
+deflection_message. Always refer to the scope as "Operations" only.
 """
 
 
